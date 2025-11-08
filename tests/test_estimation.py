@@ -8,10 +8,11 @@ based on semantic similarity to existing beliefs.
 import sys
 from typing import List
 
-from belief_types import Belief
-from belief_estimation import (
-    SemanticEstimator, BeliefInitializer,
-    estimate_belief_confidence, get_supporting_neighbors
+from baye import Belief, SemanticEstimator
+from baye.belief_estimation import (
+    BeliefInitializer,
+    estimate_belief_confidence,
+    get_supporting_neighbors
 )
 
 

@@ -12,7 +12,7 @@ import numpy as np
 import networkx as nx
 from datetime import datetime
 
-from belief_types import (
+from .belief_types import (
     Belief, PropagationEvent, PropagationResult, RelationType,
     BeliefID, Confidence, Delta
 )

@@ -11,7 +11,7 @@ of similar existing beliefs, where weights are semantic similarity scores.
 from typing import List, Tuple, Optional
 import numpy as np
 
-from belief_types import Belief, BeliefID
+from .belief_types import Belief, BeliefID
 
 
 class SemanticEstimator:

@@ -13,8 +13,8 @@ Run with:
 
 import asyncio
 import os
-from belief_types import Belief
-from llm_agents import (
+from baye import (
+    Belief,
     detect_relationship,
     resolve_conflict,
     find_related_beliefs,

@@ -5,8 +5,8 @@ This demonstrates the complete workflow of using semantic K-NN to initialize
 new beliefs without manual confidence specification.
 """
 
-from justification_graph import JustificationGraph
-from belief_estimation import SemanticEstimator, BeliefInitializer
+from baye import JustificationGraph, SemanticEstimator
+from baye.belief_estimation import BeliefInitializer
 
 
 def main():

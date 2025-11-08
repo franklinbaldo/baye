@@ -1,6 +1,6 @@
 # Justification-Based Belief Tracking System
 
-Um sistema de manutenção de crenças neural-simbólico que combina rastreamento causal determinístico com propagação semântica probabilística.
+Um sistema de manutenção de crenças neural-simbólico que combina rastreamento causal determinístico com propagação semântica probabilística, powered by LLMs.
 
 ## 🎯 Conceito Central
 
@@ -10,90 +10,48 @@ Ao invés de apenas armazenar crenças isoladas, o sistema mantém um **grafo de
 - **Propagação**: Mudanças se propagam através do grafo via dois mecanismos:
   1. **Causal** (determinístico): através de links explícitos de justificação
   2. **Semântica** (probabilístico): através de similaridade de conteúdo
+- **LLM Integration**: Detecção automática de relacionamentos e resolução de conflitos via Gemini
 
 ## 🏗️ Arquitetura
 
 ```
-belief_types.py              # Estruturas de dados core
-├── Belief                   # Node do grafo com confiança + links
-├── PropagationEvent         # Registro de um update individual
-└── PropagationResult        # Resultado de uma cascata completa
-
-justification_graph.py       # Motor principal
-├── add_belief()             # Adiciona belief e descobre justificações
-├── link_beliefs()           # Cria relacionamentos explícitos
-├── propagate_from()         # Inicia cascata de propagação
-└── explain_confidence()     # Gera justificativa em linguagem natural
-
-propagation_strategies.py    # Algoritmos isolados
-├── CausalPropagator         # Propagação determinística via grafo
-├── SemanticPropagator       # Propagação probabilística via similaridade
-├── ConflictResolver         # Detecção e resolução de contradições
-└── PropagationAnalyzer      # Métricas de consistência
-
-test_stripe_scenario.py      # Validação completa
-└── Cenário realista: Stripe API failure
+baye/
+├── src/baye/              # Package principal
+│   ├── __init__.py        # Exports públicos
+│   ├── belief_types.py    # Estruturas de dados core
+│   ├── justification_graph.py  # Motor principal
+│   ├── belief_estimation.py    # K-NN semântico
+│   └── llm_agents.py      # Agentes PydanticAI + Gemini
+├── examples/              # Exemplos de uso
+│   ├── example_llm_integration.py
+│   └── example_estimation_integrated.py
+├── tests/                 # Testes
+│   └── test_estimation.py
+├── pyproject.toml         # Config uv
+└── README.md
 ```
 
-## 🔑 Conceitos-Chave
+## 🚀 Instalação
 
-### 1. Dependency Strength (Força de Dependência)
+```bash
+# Clone o repositório
+git clone https://github.com/franklinbaldo/baye.git
+cd baye
 
-Quando uma belief B é justificada por múltiplas beliefs {A1, A2, A3}, a força da dependência é calculada com:
-- **Peso base**: `1/n` onde n = número de supporters
-- **Saturação logística**: previne explosão quando supporters já são muito confiantes
-- **Ponderação relativa**: confianças são normalizadas entre todos os supporters
+# Instale com uv
+uv sync
 
-```python
-dependency = base_weight * (logistic(conf_parent) / sum(logistic(conf_all_parents)))
+# Configure API key do Gemini
+export GOOGLE_API_KEY="your-gemini-api-key"
 ```
 
-**Por quê saturation?** Se uma belief já tem confiança 0.99, aumentá-la para 0.995 não deveria causar cascata massiva.
-
-### 2. Centrality Dampening (Amortecimento por Centralidade)
-
-Beliefs "hub" (com muitos dependentes) propagam com menos força:
-
-```python
-dampening = 1 / log2(2 + num_dependents)
-```
-
-**Razão**: Uma belief fundamental que suporta 20 outras não deve causar micro-ajustes em todas elas a cada pequena mudança.
-
-### 3. Propagação Dual
-
-**Causal (70% do peso)**:
-- Determinística através de edges explícitos
-- Usa cálculo matemático de dependency
-- Altamente interpretável (pode traçar caminho)
-
-**Semântica (30% do peso)**:
-- Probabilística via similaridade de conteúdo
-- Captura relacionamentos implícitos
-- Menos interpretável (black-box similarity)
-
-**Merge strategy**:
-```python
-if belief in causal_updates:
-    final = causal[belief] * 0.7
-    if belief in semantic_updates:
-        final += semantic[belief] * 0.3
-else:
-    final = semantic[belief] * 0.5  # Semantic sozinho é mais fraco
-```
-
-## 🚀 Uso Básico
+## 💡 Uso Rápido
 
 ### Modo V1.5: Com LLM (Recomendado)
 
 ```python
-from belief_types import Belief
-from llm_agents import detect_relationship, resolve_conflict
+from baye import Belief, detect_relationship, resolve_conflict
 import asyncio
-import os
-
-# Configure API key
-os.environ["GOOGLE_API_KEY"] = "your-gemini-api-key"
 
 async def main():
     # Criar beliefs
@@ -109,25 +67,25 @@ async def main():
         context="incident"
     )
 
-    # Detectar relacionamento automaticamente
+    # Detectar relacionamento automaticamente via LLM
     analysis = await detect_relationship(b1, lesson)
     print(f"Relationship: {analysis.relationship}")  # "contradicts"
-    print(f"Confidence: {analysis.confidence}")      # 0.75
+    print(f"Confidence: {analysis.confidence}")      # 0.70
 
     # Resolver conflito via LLM
     if analysis.relationship == "contradicts":
         resolution = await resolve_conflict(b1, lesson)
-        print(f"Resolution: {resolution.resolved_belief}")
-        # "Third-party services are generally reliable, but critical
-        #  paths like payments need defensive programming"
+        print(f"Resolved: {resolution.resolved_belief}")
+        # "While third-party services are generally reliable,
+        #  critical paths like payments need defensive programming"
 
 asyncio.run(main())
 ```
 
-### Modo V1.0: Manual
+### Modo V1.0: Manual (sem LLM)
 
 ```python
-from justification_graph import JustificationGraph
+from baye import JustificationGraph, Belief
 
 # Criar grafo
 graph = JustificationGraph(max_depth=4)
@@ -139,153 +97,93 @@ b1 = graph.add_belief(
     context="api_reliability"
 )
 
-# Link manual
-graph.link_beliefs(lesson.id, b1.id)
+b2 = graph.add_belief(
+    content="Always validate API responses",
+    confidence=0.7,
+    context="best_practices",
+    supported_by=[b1.id]
+)
 
 # Propagar mudanças
-result = graph.propagate_from(origin_id=lesson.id)
+result = graph.propagate_from(origin_id=b1.id)
+print(f"Updated {result.total_beliefs_updated} beliefs")
 ```
 
-## 📊 Exemplo: Stripe API Failure
+## 📊 Exemplo Completo
 
-Execute o exemplo com LLM (requer API key do Gemini):
+Execute o exemplo com LLM (requer API key):
 
 ```bash
 export GOOGLE_API_KEY="your-key"
-uv run python example_llm_integration.py
+uv run python examples/example_llm_integration.py
 ```
 
-Ou use o teste V1.0 (sem LLM):
+**Output esperado:**
+```
+🧠 Belief Tracking with PydanticAI + Gemini
+======================================================================
 
-```bash
-uv run python test_estimation.py
+📖 Scenario: Stripe API Failure
+
+Initial beliefs:
+  B1: Third-party payment services are generally reliable (conf: 0.7)
+  B2: Always validate and handle API responses gracefully (conf: 0.6)
+  B3: Established services like Stripe don't need defensive programming (conf: 0.4)
+
+💥 Incident: Stripe API returned 500 errors during checkout flow
+
+🔍 Step 1: Detecting relationships with existing beliefs...
+
+  • CONTRADICTS B1
+    Confidence: 0.70
+    → Third-party payment services are generally reliable...
+
+  • SUPPORTS B2
+    Confidence: 0.70
+    → Always validate and handle API responses gracefully...
+
+🤝 Step 3: Resolving contradiction between lesson and B1...
+
+  Resolved Belief:
+    "While third-party payment services are generally reliable, specific
+     incidents like Stripe API returning 500 errors can occur and severely
+     impact revenue. Robust error handling and monitoring are essential."
+
+  Confidence: 0.80
 ```
 
-**Estado inicial**:
-```
-[0.70] Third-party payment services are reliable
-[0.60] APIs can fail unexpectedly
-[0.40] Skip defensive programming for established services
-```
+## 🔑 Conceitos-Chave
 
-**Evento**: Stripe retorna erro 500
+### 1. LLM-Powered Relationship Detection
 
-**Lição aprendida**: "Payment APIs can have unexpected downtime" (conf: 0.8)
+Usa Gemini via PydanticAI para detectar automaticamente se beliefs:
+- **SUPPORT**: Um fornece evidência para o outro
+- **CONTRADICT**: Não podem ser verdadeiros simultaneamente
+- **REFINE**: Um é uma versão mais específica do outro
+- **UNRELATED**: Sem conexão lógica significativa
 
-**Propagação**:
-1. Lição contradiz "Third-party reliable" → cai para 0.45
-2. "Skip defensive" perde suporte → cai para 0.26
-3. "APIs can fail" é reforçada (V1.5 feature)
+### 2. Conflict Resolution
 
-**Estado final**:
-```
-[0.80] Payment APIs can have unexpected downtime
-[0.45] Third-party payment services are reliable  (↓)
-[0.26] Skip defensive programming                 (↓↓)
-```
+Quando beliefs contradizem, o LLM gera uma belief nuanceada que:
+- Reconhece aspectos válidos de ambos
+- Identifica condições onde cada um se aplica
+- Fornece síntese balanceada e acionável
 
-## 🎛️ Parâmetros de Propagação
+### 3. Structured Outputs
 
+Todos os agentes retornam Pydantic models validados:
 ```python
-class JustificationGraph:
-    max_depth = 4                                    # Profundidade máxima
-    propagation_budget = {0: 8, 1: 5, 2: 3, 3: 2}   # Updates por nível
-    min_delta_threshold = 0.05                       # Mínimo para propagar
-```
+class RelationshipAnalysis(BaseModel):
+    relationship: Literal["supports", "contradicts", "refines", "unrelated"]
+    confidence: float
+    explanation: str
 
-**Budget**: Previne explosão combinatória ao limitar updates por nível.
-
-**Threshold adaptativo**: `threshold * (1.2 ** depth)` - mais profundo = mais exigente.
-
-## 🔬 Análise e Debugging
-
-```python
-from propagation_strategies import PropagationAnalyzer
-
-# Verificar consistência interna
-score = PropagationAnalyzer.calculate_belief_consistency(graph.beliefs)
-# Retorna [0, 1]: beliefs devem ter confiança ≤ média dos supporters
-
-# Identificar beliefs instáveis
-unstable = PropagationAnalyzer.identify_unstable_beliefs(graph.beliefs)
-# Retorna IDs de beliefs com alta confiança mas suporte fraco
-```
-
-## 🎯 Casos de Uso
-
-### 1. Agentes Autônomos
-```python
-# Após falha em task
-task_result = {"error": "JSON malformed", "api": "external"}
-lesson = extract_lesson(task_result)
-belief = graph.add_belief(lesson, confidence=0.7)
-graph.propagate_from(belief.id)
-```
-
-### 2. Sistemas de Recomendação
-```python
-# Aprendizado de preferências
-user_feedback = "I don't like spicy food"
-preference = graph.add_belief(user_feedback, confidence=0.8)
-# Propaga para beliefs relacionadas sobre restaurantes
-```
-
-### 3. Diagnóstico Médico
-```python
-# Atualizar hipóteses com novos sintomas
-symptom = graph.add_belief("Patient has fever", confidence=0.9)
-# Propaga para diagnósticos possíveis
-```
-
-## 🚧 Limitações do V1.0-minimal
-
-### 1. Propagação Unidirecional
-**Limitação**: Propagação vai apenas de supporters → dependents, não o inverso.
-
-**Exemplo problemático**:
-```
-B1: "APIs fail" (0.6)
-  ↓ supports
-B2: "Validate responses" (0.7)
-
-# Nova evidência
-B3: "Stripe failed" (0.8) → supports B1
-
-# B1 deveria aumentar, mas não aumenta no V1.0
-```
-
-**Solução (V1.5)**: Propagação bidirecional com pesos diferentes.
-
-### 2. Embeddings Mock
-**Limitação**: Similaridade semântica usa Jaccard (overlap de palavras).
-
-**Problema**: "Validate input" e "Check data" são sinônimos mas têm baixo overlap.
-
-**Solução (V1.5)**: Integrar sentence-transformers ou OpenAI embeddings.
-
-### 3. Conflict Resolution Manual
-**Limitação**: Contradições precisam ser marcadas manualmente.
-
-**Exemplo**:
-```python
-# Manual no V1.0
-lesson.contradicts.append(b4.id)
-b4.update_confidence(-0.25)
-```
-
-**Solução (V1.5)**: LLM detecta contradições automaticamente e gera nuances.
-
-### 4. Sem Aprendizado de Estrutura
-**Limitação**: Links de justificação são criados manualmente ou por heurísticas.
-
-**Solução (V1.5)**: LLM julga relacionamentos causais:
-```python
-async def find_justifications(new_belief):
-    candidates = rag_search(new_belief.content)
-    for c in candidates:
-        rel = await llm_judge("Is A a justification for B?")
-        if rel == "supports":
-            link(c.id, new_belief.id)
+class ConflictResolution(BaseModel):
+    resolved_belief: str
+    confidence: float
+    reasoning: str
+    supports_first: bool
+    supports_second: bool
 ```
 
 ## 🛣️ Roadmap
@@ -301,6 +199,7 @@ async def find_justifications(new_belief):
 - [x] Conflict resolution automático via LLM
 - [x] Structured outputs com Pydantic models
 - [x] Batch relationship detection
+- [x] Organização src/baye/
 - [ ] Propagação bidirecional (próximo)
 - [ ] Embeddings reais via Gemini (próximo)
 
@@ -316,22 +215,88 @@ async def find_justifications(new_belief):
 - [ ] Temporal decay (beliefs antigas perdem relevância)
 - [ ] Active learning (sistema pede clarificação quando incerto)
 
-## 📚 Conexões com Literatura
+## 📚 API Reference
 
-| Sistema Clássico | Analogia | Inovação |
-|------------------|----------|----------|
-| **TMS (Doyle, 1979)** | Justification graph | Similaridade semântica vs lógica propositional |
-| **SOAR (Laird, 1987)** | Chunking (lesson → belief) | Propagação probabilística |
-| **ACT-R (Anderson)** | Activation spreading | Confiança como proxy para activation |
-| **Bayesian Networks** | Prior/posterior updates | LLM como likelihood function não-paramétrica |
+### Core Types
 
-**Contribuição principal**: Semantizar a propagação - usar proximidade em embedding space como função de influência ao invés de regras lógicas explícitas.
+```python
+from baye import Belief, BeliefID, Confidence, RelationType
+
+# Criar belief
+belief = Belief(
+    content="APIs can fail",
+    confidence=0.8,
+    context="reliability"
+)
+
+# Atualizar confiança
+belief.update_confidence(delta=0.1)  # Aumenta para 0.9
+```
+
+### LLM Agents
+
+```python
+from baye import (
+    detect_relationship,
+    resolve_conflict,
+    find_related_beliefs,
+    check_gemini_api_key
+)
+
+# Verificar API key
+check_gemini_api_key()  # Raises ValueError se não configurada
+
+# Detectar relacionamento
+analysis = await detect_relationship(belief1, belief2)
+
+# Resolver conflito
+resolution = await resolve_conflict(belief1, belief2, context="optional")
+
+# Encontrar beliefs relacionadas em batch
+relationships = await find_related_beliefs(
+    new_belief,
+    existing_beliefs,
+    min_confidence=0.7
+)
+```
+
+### Graph Operations
+
+```python
+from baye import JustificationGraph
+
+graph = JustificationGraph(max_depth=4)
+
+# Adicionar belief
+b = graph.add_belief(content="...", confidence=0.7)
+
+# Linkar beliefs
+graph.link_beliefs(parent_id, child_id, relation=RelationType.SUPPORTS)
+
+# Propagar mudanças
+result = graph.propagate_from(origin_id=b.id)
+print(f"Updated: {result.total_beliefs_updated}")
+print(f"Max depth: {result.max_depth_reached}")
+```
+
+## 🧪 Testing
+
+```bash
+# Rodar todos os testes
+uv run pytest tests/
+
+# Teste específico
+uv run pytest tests/test_estimation.py -v
+
+# Com coverage
+uv run pytest --cov=src/baye tests/
+```
 
 ## 🤝 Contribuindo
 
-Áreas prioritárias para contribuição:
-1. **Embeddings reais**: Integrar sentence-transformers
-2. **LLM integration**: Relationship detection + conflict resolution
+Áreas prioritárias:
+1. **Embeddings reais**: Integrar Gemini Embeddings API
+2. **Propagação bidirecional**: Supporters também devem ser atualizados
 3. **Visualização**: Dashboard interativo
 4. **Benchmarks**: Datasets de agent failures
 
@@ -341,10 +306,10 @@ MIT License - use livremente em projetos comerciais ou acadêmicos.
 
 ## 🙏 Agradecimentos
 
-Inspirado por discussões sobre sistemas de manutenção de crenças, Bayesian program learning, e arquiteturas de agentes autônomos.
+Inspirado por discussões sobre Truth Maintenance Systems (TMS), Bayesian program learning, e arquiteturas de agentes autônomos.
 
 ---
 
-**Status**: V1.0-minimal completo ✅
-**Próximo**: V1.5 (embeddings reais + LLM integration)
+**Status**: V1.5 (LLM Integration) ✅ CONCLUÍDO
+**Próximo**: V2.0 (embeddings reais + propagação bidirecional)
 **Autor**: Franklin Baldo ([@franklinbaldo](https://github.com/franklinbaldo))
