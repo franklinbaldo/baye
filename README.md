@@ -2,6 +2,29 @@
 
 Um sistema de manutenção de crenças neural-simbólico que combina rastreamento causal determinístico com propagação semântica probabilística, powered by LLMs.
 
+## ⚡ Quick Start
+
+```bash
+# 1. Clone
+git clone https://github.com/franklinbaldo/baye.git
+cd baye
+
+# 2. Instale
+uv sync
+
+# 3. Configure API key
+export GOOGLE_API_KEY="your-gemini-api-key"
+
+# 4. Rode!
+./run.sh
+# ou
+uv run python examples/example_llm_integration.py
+```
+
+**📖 Guia completo**: [QUICKSTART.md](QUICKSTART.md)
+
+---
+
 ## 🎯 Conceito Central
 
 Ao invés de apenas armazenar crenças isoladas, o sistema mantém um **grafo de justificação** onde:
@@ -28,21 +51,9 @@ baye/
 ├── tests/                 # Testes
 │   └── test_estimation.py
 ├── pyproject.toml         # Config uv
+├── run.sh                 # Script rápido
+├── QUICKSTART.md          # Guia passo-a-passo
 └── README.md
-```
-
-## 🚀 Instalação
-
-```bash
-# Clone o repositório
-git clone https://github.com/franklinbaldo/baye.git
-cd baye
-
-# Instale com uv
-uv sync
-
-# Configure API key do Gemini
-export GOOGLE_API_KEY="your-gemini-api-key"
 ```
 
 ## 💡 Uso Rápido
@@ -200,6 +211,7 @@ class ConflictResolution(BaseModel):
 - [x] Structured outputs com Pydantic models
 - [x] Batch relationship detection
 - [x] Organização src/baye/
+- [x] QUICKSTART.md e run.sh
 - [ ] Propagação bidirecional (próximo)
 - [ ] Embeddings reais via Gemini (próximo)
 
