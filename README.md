@@ -84,53 +84,81 @@ else:
 
 ## 🚀 Uso Básico
 
+### Modo V1.5: Com LLM (Recomendado)
+
+```python
+from belief_types import Belief
+from llm_agents import detect_relationship, resolve_conflict
+import asyncio
+import os
+
+# Configure API key
+os.environ["GOOGLE_API_KEY"] = "your-gemini-api-key"
+
+async def main():
+    # Criar beliefs
+    b1 = Belief(
+        content="Third-party services are reliable",
+        confidence=0.7,
+        context="infrastructure"
+    )
+
+    lesson = Belief(
+        content="Stripe API returned 500 errors",
+        confidence=0.9,
+        context="incident"
+    )
+
+    # Detectar relacionamento automaticamente
+    analysis = await detect_relationship(b1, lesson)
+    print(f"Relationship: {analysis.relationship}")  # "contradicts"
+    print(f"Confidence: {analysis.confidence}")      # 0.75
+
+    # Resolver conflito via LLM
+    if analysis.relationship == "contradicts":
+        resolution = await resolve_conflict(b1, lesson)
+        print(f"Resolution: {resolution.resolved_belief}")
+        # "Third-party services are generally reliable, but critical
+        #  paths like payments need defensive programming"
+
+asyncio.run(main())
+```
+
+### Modo V1.0: Manual
+
 ```python
 from justification_graph import JustificationGraph
 
 # Criar grafo
 graph = JustificationGraph(max_depth=4)
 
-# Adicionar beliefs iniciais
+# Adicionar beliefs manualmente
 b1 = graph.add_belief(
     content="APIs can fail unexpectedly",
     confidence=0.6,
     context="api_reliability"
 )
 
-b2 = graph.add_belief(
-    content="Always validate API responses",
-    confidence=0.7,
-    context="api_calls",
-    supported_by=[b1.id]  # B2 é justificada por B1
-)
-
-# Simular evento: API falha
-lesson = graph.add_belief(
-    content="Payment APIs have downtime",
-    confidence=0.8,
-    context="api_reliability"
-)
-
-# Link manual (em V1.5 será automático via LLM)
+# Link manual
 graph.link_beliefs(lesson.id, b1.id)
 
 # Propagar mudanças
 result = graph.propagate_from(origin_id=lesson.id)
-
-# Analisar resultados
-print(f"Beliefs atualizadas: {result.total_beliefs_updated}")
-print(f"Profundidade máxima: {result.max_depth_reached}")
-
-# Explicar uma belief
-print(graph.explain_confidence(b2.id))
 ```
 
 ## 📊 Exemplo: Stripe API Failure
 
-Execute o teste completo:
+Execute o exemplo com LLM (requer API key do Gemini):
 
 ```bash
-python test_stripe_scenario.py
+export GOOGLE_API_KEY="your-key"
+uv run python example_llm_integration.py
+```
+
+Ou use o teste V1.0 (sem LLM):
+
+```bash
+uv run python test_estimation.py
 ```
 
 **Estado inicial**:
@@ -268,11 +296,13 @@ async def find_justifications(new_belief):
 - [x] Detecção de ciclos
 - [x] Teste Stripe funcionando
 
-### V1.5 (Robustez) 📅
-- [ ] Propagação bidirecional
-- [ ] Embeddings reais (sentence-transformers)
-- [ ] Conflict resolution automático via LLM
-- [ ] Relationship discovery via LLM
+### V1.5 (LLM Integration) ✅ **CONCLUÍDO**
+- [x] Relationship discovery via LLM (PydanticAI + Gemini)
+- [x] Conflict resolution automático via LLM
+- [x] Structured outputs com Pydantic models
+- [x] Batch relationship detection
+- [ ] Propagação bidirecional (próximo)
+- [ ] Embeddings reais via Gemini (próximo)
 
 ### V2.0 (Escalabilidade) 🎯
 - [ ] Persistência (Neo4j + vector DB)
