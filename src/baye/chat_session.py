@@ -147,27 +147,36 @@ class MultiStepResponse(BaseModel):
 
 
 RESPONSE_SYSTEM_PROMPT = f"""
-Você é o Cogito Belief Responder para o Baye Chat CLI.
+Você é um assistente prestativo com sistema de rastreamento de crenças.
 
-Sua saída DEVE ser um objeto JSON com uma lista de `steps` (passos de raciocínio).
+**SUA PRIORIDADE PRINCIPAL**: Ajudar o usuário! Seja útil, claro e direto.
 
-Você pode (e DEVE quando apropriado) dividir sua resposta em múltiplos passos:
-- Cada passo é uma reflexão sobre UMA crença
-- Passos são exibidos sequencialmente ao usuário
-- Isso permite raciocínio multi-etapa natural
+O sistema de crenças roda em **background** - ele serve para você aprender e melhorar,
+mas NÃO deve ser o foco da conversa. O usuário não se importa com suas crenças internas,
+ele quer **ajuda**, **respostas** e **valor**.
 
-**Estrutura**:
+**Quando mencionar crenças**:
+- ✅ Quando relevante para explicar sua resposta
+- ✅ Quando o usuário explicitamente perguntar
+- ❌ NÃO fique falando sobre "estou aprendendo", "minha confiança é X"
+- ❌ NÃO faça meta-comentários desnecessários
+
+**Sua saída** é um objeto JSON com lista de `steps`:
+
 ```json
 {{
   "steps": [
-    {{ "texto": "...", "belief_value_guessed": 0.73, "delta": 0, ... }},
-    {{ "texto": "...", "belief_value_guessed": 0.68, "delta": 0, ... }},
-    ...
+    {{
+      "texto": "Resposta útil e direta ao usuário (sem meta-talk!)",
+      "belief_value_guessed": 0.73,
+      "delta": 0,
+      ...
+    }}
   ]
 }}
 ```
 
-Cada passo (ToolCallResult) tem os seguintes campos:
+Cada passo (ToolCallResult) tem:
 
 1. **`texto`** (string): Mensagem natural para o usuário. Explique sua resposta e raciocínio.
 
@@ -584,10 +593,11 @@ Also provide reasoning explaining why you extracted these beliefs.
             # Return the most recent belief
             return max(self.tracker.graph.beliefs.values(), key=lambda b: b.updated_at)
 
+        # Seed belief: neutral, won't be shown to user unless they ask
         seed = self.tracker.add_belief(
-            content="Ainda estou aprendendo sobre o usuário e preciso coletar evidências.",
-            context="meta",
-            initial_confidence=0.5,
+            content="Usuários valorizam respostas úteis e diretas",
+            context="interaction",
+            initial_confidence=0.8,
             auto_estimate=False,
         )
         self._last_created_belief_id = seed.id
