@@ -229,7 +229,15 @@ Also provide reasoning explaining why you extracted these beliefs.
             # Keep pending ID only while the tool is executing
             self._pending_belief_id = None
 
-        payload: ToolCallResult = tool_run.output
+        # When using tools, PydanticAI returns the tool result in .data
+        # The tool function's return value is accessible via result.data
+        payload = tool_run.data
+
+        # Validate we got the right type
+        if not isinstance(payload, ToolCallResult):
+            raise ValueError(
+                f"Expected ToolCallResult but got {type(payload).__name__}: {payload}"
+            )
 
         reply = AssistantReply(
             text=payload.texto.strip(),
