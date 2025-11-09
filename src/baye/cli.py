@@ -8,6 +8,7 @@ import asyncio
 import sys
 from typing import Optional
 import json
+import argparse
 
 from rich.console import Console
 from rich.table import Table
@@ -16,7 +17,7 @@ from rich.markdown import Markdown
 from rich.prompt import Prompt
 from rich import box
 
-from .chat_session import ChatSession, AssistantReply
+from .chat_session import ChatSession, AssistantReply, ClaimBasedReply, ClaimValidationStep, ClaimCalibrationError
 from .belief_tracker import BeliefTracker
 
 
@@ -34,9 +35,10 @@ class BeliefChatCLI:
     - /quit - Exit
     """
 
-    def __init__(self):
+    def __init__(self, mode: str = "legacy"):
         self.console = Console()
         self.session: Optional[ChatSession] = None
+        self.mode = mode
 
     def render_welcome(self):
         """Display welcome message"""
@@ -70,8 +72,11 @@ Type a message to start!
         if role == "user":
             self.console.print(f"[bold cyan]You:[/bold cyan] {content}")
         else:
-            if isinstance(content, AssistantReply):
-                # Render multiple steps
+            if isinstance(content, ClaimBasedReply):
+                # Claim-based mode rendering
+                self._render_claim_based_reply(content)
+            elif isinstance(content, AssistantReply):
+                # Legacy mode rendering - multiple steps
                 for step_idx, step in enumerate(content.steps):
                     # Step header
                     if len(content.steps) > 1:
@@ -117,6 +122,40 @@ Type a message to start!
                     border_style="blue",
                     box=box.ROUNDED
                 ))
+
+    def _render_claim_based_reply(self, reply: ClaimBasedReply):
+        """Render claim-based response with validation details"""
+        # Main response text
+        panel_text = reply.response_text
+
+        # Add claim validation footer
+        footer = "\n\n[dim]Claims validated:[/dim]\n"
+        for claim in reply.validated_claims:
+            # Color code based on error magnitude
+            error_abs = abs(claim.error)
+            if error_abs < claim.margin * 0.5:
+                status = "[green]✓[/green]"
+            elif error_abs < claim.margin:
+                status = "[yellow]✓[/yellow]"
+            else:
+                status = "[red]✗[/red]"
+
+            # Truncate claim if too long
+            claim_text = claim.claim_content
+            if len(claim_text) > 50:
+                claim_text = claim_text[:47] + "..."
+
+            footer += (
+                f"  {status} [dim]{claim_text}[/dim] "
+                f"[{claim.estimate:.2f} → {claim.actual:.2f}, err: {claim.error:+.2f}]\n"
+            )
+
+        self.console.print(Panel(
+            panel_text + footer,
+            title="🤖 Assistant (claim-based)",
+            border_style="blue",
+            box=box.ROUNDED
+        ))
 
     def render_beliefs_table(self, beliefs: list, title: str = "Beliefs"):
         """Render beliefs as a table"""
@@ -328,8 +367,9 @@ Type a message to start!
         self.render_welcome()
 
         # Initialize session
-        self.console.print("\n[dim]Initializing belief tracker...[/dim]")
-        self.session = ChatSession()
+        mode_label = "claim-based" if self.mode == "claim-based" else "legacy"
+        self.console.print(f"\n[dim]Initializing belief tracker ({mode_label} mode)...[/dim]")
+        self.session = ChatSession(mode=self.mode)
         self.console.print("[green]✓ Ready![/green]\n")
 
         while True:
@@ -359,6 +399,15 @@ Type a message to start!
                 self.console.print("\n[yellow]Use /quit to exit[/yellow]")
                 continue
 
+            except ClaimCalibrationError as e:
+                # Claim validation error - show detailed feedback
+                self.console.print(Panel(
+                    str(e),
+                    title="⚠️  Claim Validation Error",
+                    border_style="red",
+                    style="red"
+                ))
+
             except ValueError as e:
                 # These are expected errors (estimation errors, missing justifications)
                 # Show them nicely to the user
@@ -381,7 +430,23 @@ Type a message to start!
 
 def main():
     """Entry point for CLI"""
-    cli = BeliefChatCLI()
+    # Parse command-line arguments
+    parser = argparse.ArgumentParser(
+        description="Belief Tracking Chat - Interactive AI with epistemic validation"
+    )
+    parser.add_argument(
+        "--mode",
+        type=str,
+        choices=["legacy", "claim-based"],  # Extensible for future modes
+        default="legacy",
+        help="Chat mode: 'legacy' (dual-agent with forced calibration) or 'claim-based' (granular claim validation)"
+    )
+
+    args = parser.parse_args()
+
+    # Initialize CLI with selected mode
+    cli = BeliefChatCLI(mode=args.mode)
+
     try:
         asyncio.run(cli.run())
     except KeyboardInterrupt:

@@ -35,7 +35,13 @@ from .llm_agents import (
 
 # Belief tracking and chat
 from .belief_tracker import BeliefTracker, BeliefUpdate, TrainingSignal
-from .chat_session import ChatSession, Message, AssistantReply
+from .chat_session import (
+    ChatSession,
+    Message,
+    AssistantReply,
+    ClaimBasedReply,
+    ClaimCalibrationError,
+)
 
 __all__ = [
     # Version
@@ -58,6 +64,8 @@ __all__ = [
     "TrainingSignal",
     "Message",
     "AssistantReply",
+    "ClaimBasedReply",
+    "ClaimCalibrationError",
     # LLM models
     "RelationshipAnalysis",
     "ConflictResolution",

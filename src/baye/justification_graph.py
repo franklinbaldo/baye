@@ -458,7 +458,7 @@ class JustificationGraph:
         Returns:
             The created Belief object with estimated confidence
         """
-        from belief_estimation import SemanticEstimator
+        from .belief_estimation import SemanticEstimator
         
         if not self.beliefs:
             # No existing beliefs to estimate from

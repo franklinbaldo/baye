@@ -97,6 +97,80 @@ class AssistantReply:
         return self.steps[-1].margin if self.steps else 0.1
 
 
+# ============================================================================
+# CLAIM-BASED MODE - New architecture for granular claim validation
+# ============================================================================
+
+class ValidatedClaim(BaseModel):
+    """Single factual claim that needs validation"""
+    content: str = Field(description="The claim/assertion being made")
+    confidence_estimate: float = Field(
+        ge=0.0, le=1.0,
+        description="Your precise confidence in this claim (e.g., 0.73, not 0.7)"
+    )
+    context: str = Field(
+        default="general",
+        description="Domain/context of this claim"
+    )
+
+
+class ClaimBasedResponse(BaseModel):
+    """Response structured as list of validated claims"""
+    claims: List[ValidatedClaim] = Field(
+        min_length=1,
+        description="List of factual claims in your response"
+    )
+    response_text: str = Field(
+        description="Natural language response to user (can reference claims)"
+    )
+
+
+@dataclass
+class ClaimValidationStep:
+    """Result of validating a single claim"""
+    claim_content: str
+    estimate: float
+    actual: float
+    margin: float
+    error: float
+    belief_id: str
+    within_margin: bool
+
+
+@dataclass
+class ClaimBasedReply:
+    """Reply in claim-based mode"""
+    response_text: str
+    validated_claims: List[ClaimValidationStep]
+
+    @property
+    def text(self) -> str:
+        return self.response_text
+
+
+class ClaimCalibrationError(ValueError):
+    """Raised when a claim is outside confidence margin"""
+    def __init__(self, claim: str, estimate: float, actual: float, margin: float, error: float):
+        self.claim = claim
+        self.estimate = estimate
+        self.actual = actual
+        self.margin = margin
+        self.error = error
+
+        super().__init__(
+            f"❌ CLAIM VALIDATION ERROR\n\n"
+            f"Claim: \"{claim}\"\n"
+            f"Your estimate: {estimate:.3f}\n"
+            f"K-NN estimate: {actual:.3f} ±{margin:.2f}\n"
+            f"Error: {error:+.3f} (OUTSIDE MARGIN)\n\n"
+            f"This claim failed validation. Use delta=0 and revise your claims!"
+        )
+
+
+# ============================================================================
+# LEGACY MODE - Original tool-based architecture
+# ============================================================================
+
 class JustificationBelief(BaseModel):
     """A belief that justifies a confidence change"""
     content: str = Field(..., description="The justification statement")
@@ -254,6 +328,82 @@ Isso força **meta-cognição**: você vê seus erros antes de poder agir!
 **Margem padrão**: ±{DEFAULT_CONFIDENCE_MARGIN:.2f}
 """
 
+# Claim-based mode system prompt
+CLAIM_BASED_SYSTEM_PROMPT = """
+Você é um assistente prestativo que valida cada afirmação factual que faz.
+
+**SUA PRIORIDADE**: Ajudar o usuário com respostas precisas e bem calibradas.
+
+**Sua saída DEVE ser estruturada como claims validados**:
+
+```json
+{{
+  "claims": [
+    {{
+      "content": "afirmação factual específica",
+      "confidence_estimate": 0.73,  // PRECISE estimate
+      "context": "domain"
+    }},
+    ...
+  ],
+  "response_text": "resposta natural ao usuário"
+}}
+```
+
+**REGRAS CRÍTICAS**:
+
+1. **Divida sua resposta em claims factuais específicos**
+   - Cada claim é uma afirmação que pode ser verdadeira/falsa
+   - Claims devem ser atômicos (uma ideia por claim)
+   - Evite claims vagos ou genéricos
+
+2. **Estime confidence PRECISA para cada claim**
+   - Use valores específicos: 0.73, não 0.7
+   - Seja honesto sobre incerteza
+   - Se você não sabe: use confidence baixa (0.2-0.4)
+
+3. **Cada claim é validado INDIVIDUALMENTE**
+   - Se QUALQUER claim estiver fora da margem → ERRO específico
+   - Você verá qual claim falhou
+   - Use esse feedback para calibrar próximas respostas
+
+**Exemplos de BONS claims** (específicos, testáveis):
+✓ "Python usa indentação para delimitar blocos de código"
+✓ "O comando git status mostra mudanças não commitadas"
+✓ "PostgreSQL é um banco de dados relacional SQL"
+✓ "Donald Trump assumiu a presidência dos EUA em janeiro de 2025"
+
+**Exemplos de MAUS claims** (vagos, não testáveis):
+✗ "Programação é importante"
+✗ "Bancos de dados armazenam dados"
+✗ "Git é útil para desenvolvedores"
+✗ "Modelos podem estar errados"
+
+**Como lidar com incerteza**:
+- Se você NÃO sabe: faça o claim com confidence BAIXA (0.2-0.4)
+- Se você ACHA que sabe: use confidence MÉDIA (0.5-0.7)
+- Se você TEM CERTEZA: use confidence ALTA (0.8-0.95)
+- NUNCA use 1.0 (certeza absoluta é impossível)
+
+**Erro de calibração**:
+Se um claim estiver fora da margem, você verá:
+```
+❌ CLAIM VALIDATION ERROR
+Claim: "Joe Biden é presidente dos EUA"
+Your estimate: 0.95
+K-NN estimate: 0.30 ±0.15
+Error: -0.65 (OUTSIDE MARGIN)
+```
+
+Use esse feedback para ajustar sua próxima resposta!
+
+**response_text**:
+- Responda naturalmente ao usuário
+- NÃO liste os claims explicitamente (a menos que pedido)
+- NÃO faça meta-comentários sobre suas crenças
+- Seja útil, direto e claro
+"""
+
 
 class ChatSession:
     """
@@ -270,12 +420,14 @@ class ChatSession:
         self,
         tracker: Optional[BeliefTracker] = None,
         model: str = "google-gla:gemini-2.0-flash",
+        mode: str = "legacy",  # "legacy" or "claim-based"
     ):
         # Check API key
         check_gemini_api_key()
 
         self.tracker = tracker or BeliefTracker()
         self.model = model
+        self.mode = mode
         self.messages: List[Message] = []
         self.confidence_margin = DEFAULT_CONFIDENCE_MARGIN
         self._belief_margins: Dict[str, float] = {}
@@ -286,11 +438,23 @@ class ChatSession:
         self._last_estimation_error: Dict[str, float] = {}  # belief_id → error
         self._can_use_delta: Dict[str, bool] = {}  # belief_id → can adjust?
 
-        # Agent responsável apenas por extrair crenças implícitas
-        self.extraction_agent = Agent(
-            model,
-            output_type=BeliefExtraction,
-            system_prompt="""You are a helpful AI assistant with a belief tracking system.
+        # Initialize agents based on mode
+        if mode == "claim-based":
+            # Claim-based mode: single agent that generates validated claims
+            self.claim_agent = Agent(
+                model,
+                output_type=ClaimBasedResponse,
+                system_prompt=CLAIM_BASED_SYSTEM_PROMPT,
+            )
+            self.extraction_agent = None  # Not used in claim-based mode
+            self.response_agent = None
+        else:
+            # Legacy mode: dual-agent architecture
+            # Agent responsável apenas por extrair crenças implícitas
+            self.extraction_agent = Agent(
+                model,
+                output_type=BeliefExtraction,
+                system_prompt="""You are a helpful AI assistant with a belief tracking system.
 
 Your job is to:
 1. Have natural conversations with the user
@@ -311,19 +475,20 @@ Example beliefs:
 Return beliefs as a list with: content, context, confidence_estimate.
 Also provide reasoning explaining why you extracted these beliefs.
 """
-        )
+            )
 
-        # Agent separado para gerar respostas via múltiplos passos
-        # Using output_type forces structured output
-        self.response_agent = Agent(
-            model,
-            output_type=MultiStepResponse,
-            system_prompt=RESPONSE_SYSTEM_PROMPT,
-        )
+            # Agent separado para gerar respostas via múltiplos passos
+            # Using output_type forces structured output
+            self.response_agent = Agent(
+                model,
+                output_type=MultiStepResponse,
+                system_prompt=RESPONSE_SYSTEM_PROMPT,
+            )
+            self.claim_agent = None  # Not used in legacy mode
 
         self._ensure_seed_belief()
 
-    async def process_message(self, user_input: str) -> AssistantReply:
+    async def process_message(self, user_input: str):
         """
         Process user message and update beliefs
 
@@ -331,10 +496,19 @@ Also provide reasoning explaining why you extracted these beliefs.
             user_input: User's message
 
         Returns:
-            Assistant's response
+            Assistant's response (AssistantReply for legacy, ClaimBasedReply for claim-based)
         """
         # Add user message to history
         self.messages.append(Message(role="user", content=user_input))
+
+        # Route to appropriate processing method based on mode
+        if self.mode == "claim-based":
+            return await self._process_claim_based(user_input)
+        else:
+            return await self._process_legacy(user_input)
+
+    async def _process_legacy(self, user_input: str) -> AssistantReply:
+        """Legacy mode: dual-agent with extraction + response"""
 
         # Build conversation context
         context = self._build_context()
@@ -413,6 +587,104 @@ Also provide reasoning explaining why you extracted these beliefs.
         ))
 
         return reply
+
+    async def _process_claim_based(self, user_input: str) -> ClaimBasedReply:
+        """
+        Claim-based mode: validate each factual claim individually
+
+        This is the new architecture that addresses the granularity problem:
+        - LLM generates response as list of claims
+        - Each claim is validated against belief graph
+        - If ANY claim is outside margin → specific error
+        - LLM sees exactly which claim failed
+        """
+        # Build conversation context
+        context = self._build_context()
+
+        # Get claim-based response from LLM
+        result = await self.claim_agent.run(context)
+        claim_response: ClaimBasedResponse = result.output
+
+        # Validate each claim individually
+        validated_claims = []
+
+        for claim in claim_response.claims:
+            # Get or create belief for this claim
+            belief = await self._get_or_create_belief_for_claim(claim)
+
+            # Get K-NN margin
+            margin = self._get_margin(belief.id)
+
+            # Calculate error
+            actual = belief.confidence
+            error = actual - claim.confidence_estimate
+            within_margin = abs(error) <= margin
+
+            # If outside margin, raise error immediately
+            if not within_margin:
+                raise ClaimCalibrationError(
+                    claim=claim.content,
+                    estimate=claim.confidence_estimate,
+                    actual=actual,
+                    margin=margin,
+                    error=error
+                )
+
+            # Track validation result
+            validated_claims.append(ClaimValidationStep(
+                claim_content=claim.content,
+                estimate=claim.confidence_estimate,
+                actual=actual,
+                margin=margin,
+                error=error,
+                belief_id=belief.id,
+                within_margin=within_margin
+            ))
+
+        # All claims validated successfully
+        reply = ClaimBasedReply(
+            response_text=claim_response.response_text,
+            validated_claims=validated_claims
+        )
+
+        # Add to message history
+        self.messages.append(Message(
+            role="assistant",
+            content=reply.response_text,
+            metadata={
+                "mode": "claim-based",
+                "num_claims": len(validated_claims),
+                "claims": [c.claim_content for c in validated_claims],
+            }
+        ))
+
+        return reply
+
+    async def _get_or_create_belief_for_claim(self, claim: ValidatedClaim) -> Belief:
+        """
+        Get existing belief for claim or create new one with K-NN estimation
+
+        This ensures each claim maps to a tracked belief in the graph.
+        """
+        # Check if belief already exists (exact match or semantic similarity)
+        existing = [
+            b for b in self.tracker.graph.beliefs.values()
+            if b.content.lower() == claim.content.lower()
+        ]
+
+        if existing:
+            return existing[0]
+
+        # Create new belief with K-NN estimation
+        belief = self.tracker.add_belief(
+            content=claim.content,
+            context=claim.context,
+            initial_confidence=None,  # Will be estimated by K-NN
+            auto_estimate=True,  # Use K-NN
+            auto_link=True,  # Auto-link to similar beliefs
+        )
+
+        return belief
 
     async def _process_single_step(
         self,
