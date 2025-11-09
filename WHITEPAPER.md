@@ -848,6 +848,97 @@ These are numerically contradictory but semantically close. LLM may classify as 
 
 **Future consideration:** Add optional strict DAG enforcement mode with topological sort validation.
 
+### 8.5.8 Convergence Properties
+
+**Limitation:** No formal proof or empirical demonstration that propagation converges to a stable state.
+
+**Theoretical questions:**
+- Does repeated propagation eventually reach a fixed point?
+- Under what conditions (if any) is convergence guaranteed?
+- What is the rate of convergence?
+
+**Observations:**
+- Cycle detection prevents infinite loops (propagation terminates on revisited nodes)
+- Dampening via logistic saturation (k=10) and propagation weights (α=0.7, β=0.3) suggests eventual decay
+- Budget limits at each depth enforce termination
+
+**Open question:** For a graph with N beliefs and E edges, does iterative propagation converge in O(N) iterations, O(E) iterations, or is convergence not guaranteed?
+
+**Future work:**
+- Formal proof of convergence under assumptions (e.g., acyclic graph, bounded initial confidences)
+- Empirical stress tests: run propagation 100+ times, measure confidence changes over iterations
+- Analyze spectral properties of propagation matrix (eigenvalues determine convergence rate)
+
+### 8.5.9 Consistency Guarantees
+
+**Limitation:** System may reach logically inconsistent states without detection.
+
+**Example problematic state:**
+```
+B₁: "API X is reliable" (confidence: 0.9)
+B₂: "API X is unreliable" (confidence: 0.8)
+```
+
+Both beliefs can coexist with high confidence simultaneously.
+
+**Why this happens:**
+- LLM detects contradictions but doesn't enforce constraints
+- No requirement that P(A) + P(¬A) ≤ 1
+- Propagation can amplify both beliefs independently
+
+**Impact:**
+- Agent may act on contradictory beliefs
+- Decision-making becomes unpredictable
+- Explainability suffers (justifications point in opposite directions)
+
+**Potential solutions:**
+1. **Constraint enforcement:** When adding B₂ that contradicts B₁, automatically create mutual exclusion constraint
+2. **Probabilistic semantics:** Treat beliefs as events in probability space, enforce normalization
+3. **Conflict resolution:** Force resolution before both beliefs exceed threshold (e.g., both > 0.7)
+4. **Periodic consistency checks:** Scan for P(A) + P(¬A) > 1.2, trigger automatic resolution
+
+**Future work:** Implement constraint-based consistency checking with automatic conflict resolution.
+
+### 8.5.10 Sample Complexity
+
+**Limitation:** Unknown how many existing beliefs are required for reliable K-NN estimation.
+
+**Theoretical question:** For K-NN confidence estimation with error ε and confidence 1-δ, how many beliefs N are needed in the corpus?
+
+**Factors affecting sample complexity:**
+- **Diversity of belief corpus:** Narrow domain (e.g., only security beliefs) requires fewer samples than broad domain
+- **Similarity metric quality:** Better embeddings reduce required samples
+- **K value:** Larger K requires more samples but may be more robust
+
+**Empirical observations (V1.5):**
+- With 5-10 beliefs: Estimation often uses 1-2 neighbors → high uncertainty
+- With 50-100 beliefs: Typically finds 3-5 neighbors → moderate uncertainty
+- With 500+ beliefs: Consistently finds K=5 neighbors → low uncertainty
+
+**Hypothesis:** N ≥ 10K beliefs needed for robust estimation across diverse domains, but N ≥ 100 may suffice for narrow domains.
+
+**Future work:**
+- Learning curve analysis: plot estimation error vs. corpus size
+- Derive PAC-learning bounds for K-NN in semantic space
+- Domain-specific sample complexity studies (security vs. performance vs. UI)
+
+### 8.5.11 Engineering Gaps
+
+**Limitation:** Current implementation lacks production-critical features identified in engineering review.
+
+**Missing components:**
+1. **Abstract interfaces:** No `PropagationStrategy` or `SimilarityMetric` protocols
+2. **Provider abstraction:** Tight coupling to Gemini API (can't swap to GPT-4/Claude)
+3. **Error handling:** Basic exception handling, no retry logic or graceful degradation
+4. **Caching:** No caching of LLM results (expensive repeated calls)
+5. **Batch operations:** No bulk update APIs for efficiency
+6. **Monitoring:** No metrics, logging, or observability hooks
+7. **Code coverage:** Unknown test coverage (no coverage report)
+
+**Impact:** System is a research prototype, not production-ready software.
+
+**Roadmap:** V2.0 addresses architectural gaps; V2.5 adds enterprise features (monitoring, SLA guarantees).
+
 ---
 
 ## 9. Future Directions
