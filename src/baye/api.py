@@ -9,7 +9,7 @@ Provides high-level interfaces for:
 This is the main integration point for agentic systems.
 """
 
-from typing import List, Optional, Dict, Callable, Tuple
+from typing import List, Optional, Dict, Callable, Tuple, Any
 from dataclasses import dataclass
 import time
 

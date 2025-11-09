@@ -24,9 +24,7 @@ from .belief_types import Belief, BeliefID
 # ============================================================================
 
 @dataclass
-class CandidateBelie
-
-:
+class CandidateBelief:
     """
     A belief candidate for retrieval.
 
