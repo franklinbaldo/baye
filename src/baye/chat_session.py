@@ -8,9 +8,13 @@ from dataclasses import dataclass, field
 from typing import List, Dict, Optional, Callable, Any
 from datetime import datetime
 import asyncio
+import warnings
 
-from pydantic_ai import Agent, Tool, RunContext
+from pydantic_ai import Agent
 from pydantic import BaseModel, Field
+
+# Suppress PydanticAI warnings about additionalProperties
+warnings.filterwarnings('ignore', category=UserWarning, module='pydantic_ai')
 
 from .belief_tracker import BeliefTracker, BeliefUpdate
 from .belief_types import Belief
@@ -74,20 +78,29 @@ DEFAULT_CONFIDENCE_MARGIN = 0.10
 RESPONSE_SYSTEM_PROMPT = f"""
 Você é o Cogito Belief Responder para o Baye Chat CLI.
 
-Regras inegociáveis:
-1. Você NUNCA pode responder com texto livre. Toda saída deve ser uma chamada ao tool `update_belief_tool`.
-2. Cada chamada DEVE preencher os três inputs obrigatórios:
-   - `texto`: mensagem completa destinada ao usuário (sem placeholders ou listas separadas).
-   - `belief_value_guessed`: seu melhor palpite (0–1) para a confiança atual da crença ativa.
-   - `delta`: ajuste solicitado. Use 0 quando seu palpite estiver dentro da margem permitida. Se o tool reclamar que o palpite está fora da margem, repita a chamada com o MESMO `texto` e um `delta` que aproxime o valor real.
-3. Não use outros tools, não gere JSON manual, não crie respostas extras após chamar o tool.
-4. Sempre reflita as crenças ativas e explique brevemente no `texto` como elas influenciaram sua resposta.
-5. Delta positivo aumenta a confiança; delta negativo reduz. Limite-se ao intervalo [-1, 1].
+Sua saída DEVE ser um objeto JSON estruturado com os seguintes campos:
 
-O CLI exibirá diretamente o conteúdo de `texto`, portanto mantenha tom natural, claro e honesto.
-Lembre-se: se estiver em dúvida, ainda assim chame o tool com `delta=0` e explicite a incerteza no `texto`.
+1. `texto` (string): Mensagem completa e natural para o usuário. Explique como as crenças ativas influenciaram sua resposta.
 
-Margem padrão: ±{DEFAULT_CONFIDENCE_MARGIN:.2f}. A margem específica de cada crença virá no prompt do usuário.
+2. `belief_value_guessed` (float, 0-1): Seu melhor palpite para a confiança atual da crença ativa baseado no contexto.
+
+3. `delta` (float, -1 a 1): Ajuste de confiança solicitado:
+   - Use 0 quando seu palpite estiver dentro da margem permitida
+   - Positivo aumenta confiança, negativo reduz
+   - Se o sistema reclamar que ultrapassou a margem, ajuste o delta
+
+4. `belief_id` (string): ID da crença (será preenchido automaticamente)
+
+5. `actual_confidence` (float, 0-1): Confiança real (será preenchido automaticamente)
+
+6. `applied_delta` (float): Delta aplicado (será preenchido automaticamente)
+
+7. `margin` (float): Margem de tolerância (será preenchida automaticamente)
+
+**Importante**:
+- Mantenha tom natural e conversacional no `texto`
+- Se incerto, use `delta=0` e mencione a incerteza no texto
+- Margem padrão: ±{DEFAULT_CONFIDENCE_MARGIN:.2f}
 """
 
 
@@ -146,20 +159,11 @@ Also provide reasoning explaining why you extracted these beliefs.
         )
 
         # Agent separado para gerar respostas via tool único
+        # Using output_type forces structured output
         self.response_agent = Agent(
             model,
+            output_type=ToolCallResult,
             system_prompt=RESPONSE_SYSTEM_PROMPT,
-            tools=[
-                Tool(
-                    self._tool_update_belief_response,
-                    name="update_belief_tool",
-                    description=(
-                        "Canal único para falar com o usuário e ajustar uma crença ativa. "
-                        "Sempre exige `texto`, `belief_value_guessed` e `delta`."
-                    ),
-                    takes_ctx=True,
-                )
-            ],
         )
 
         self._ensure_seed_belief()
@@ -222,22 +226,41 @@ Also provide reasoning explaining why you extracted these beliefs.
             extraction=extraction,
         )
 
-        self._pending_belief_id = active_belief.id
-        try:
-            tool_run = await self.response_agent.run(response_context)
-        finally:
-            # Keep pending ID only while the tool is executing
-            self._pending_belief_id = None
+        # Get structured output from response agent
+        result = await self.response_agent.run(response_context)
+        llm_output: ToolCallResult = result.output
 
-        # When using tools, PydanticAI returns the tool result in .data
-        # The tool function's return value is accessible via result.data
-        payload = tool_run.data
+        # Validate LLM's guess and apply delta
+        belief = self.tracker.graph.beliefs[active_belief.id]
+        margin = self._get_margin(active_belief.id)
+        actual_conf = belief.confidence
+        diff = abs(actual_conf - llm_output.belief_value_guessed)
 
-        # Validate we got the right type
-        if not isinstance(payload, ToolCallResult):
-            raise ValueError(
-                f"Expected ToolCallResult but got {type(payload).__name__}: {payload}"
+        # Apply delta if provided or if guess is outside margin
+        applied_delta = 0.0
+        if abs(llm_output.delta) > 0:
+            update = self.tracker.apply_manual_delta(
+                active_belief.id,
+                llm_output.delta,
+                provenance={
+                    "source": "llm_structured_output",
+                    "texto": llm_output.texto,
+                    "guess": llm_output.belief_value_guessed,
+                },
             )
+            applied_delta = update.new_confidence - update.old_confidence
+            actual_conf = update.new_confidence
+
+        # Build final payload with actual values filled in
+        payload = ToolCallResult(
+            texto=llm_output.texto,
+            belief_value_guessed=llm_output.belief_value_guessed,
+            delta=llm_output.delta,
+            belief_id=active_belief.id,
+            actual_confidence=actual_conf,
+            applied_delta=applied_delta,
+            margin=margin,
+        )
 
         reply = AssistantReply(
             text=payload.texto.strip(),
@@ -367,66 +390,6 @@ Also provide reasoning explaining why you extracted these beliefs.
     def _get_margin(self, belief_id: str) -> float:
         """Return the confidence margin for a belief."""
         return self._belief_margins.get(belief_id, self.confidence_margin)
-
-    async def _tool_update_belief_response(
-        self,
-        ctx: RunContext[None],
-        texto: str,
-        belief_value_guessed: float,
-        delta: float = 0.0,
-    ) -> ToolCallResult:
-        """Single tool that the LLM must call to speak/update beliefs."""
-        if not texto.strip():
-            raise ValueError("O campo `texto` não pode ficar vazio.")
-
-        if not 0.0 <= belief_value_guessed <= 1.0:
-            raise ValueError("`belief_value_guessed` precisa estar no intervalo [0, 1].")
-
-        if delta < -1.0 or delta > 1.0:
-            raise ValueError("`delta` deve estar entre -1 e 1.")
-
-        belief_id = self._pending_belief_id
-        if not belief_id:
-            raise ValueError("Nenhuma crença ativa foi disponibilizada para este turno.")
-
-        belief = self.tracker.graph.beliefs.get(belief_id)
-        if not belief:
-            raise ValueError(f"Crença {belief_id} não encontrada.")
-
-        margin = self._get_margin(belief_id)
-        actual_conf = belief.confidence
-        diff = abs(actual_conf - belief_value_guessed)
-
-        if diff > margin and abs(delta) < 1e-4:
-            raise ValueError(
-                f"Sua estimativa ({belief_value_guessed:.2f}) está fora da margem ±{margin:.2f} "
-                f"do valor real ({actual_conf:.2f}). "
-                "Repita a chamada com o MESMO `texto` e forneça um `delta` que ajuste a crença."
-            )
-
-        applied_delta = 0.0
-        if abs(delta) > 0:
-            update = self.tracker.apply_manual_delta(
-                belief_id,
-                delta,
-                provenance={
-                    "source": "llm_tool",
-                    "texto": texto,
-                    "guess": belief_value_guessed,
-                },
-            )
-            applied_delta = update.new_confidence - update.old_confidence
-            actual_conf = update.new_confidence
-
-        return ToolCallResult(
-            texto=texto,
-            belief_value_guessed=belief_value_guessed,
-            delta=delta,
-            belief_id=belief_id,
-            actual_confidence=actual_conf,
-            applied_delta=applied_delta,
-            margin=margin,
-        )
 
     async def handle_feedback(
         self,
