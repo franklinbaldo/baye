@@ -102,10 +102,8 @@ class JustificationBelief(BaseModel):
     content: str = Field(..., description="The justification statement")
     context: str = Field(default="justification", description="Context/domain")
     confidence_estimate: float = Field(..., ge=0.0, le=1.0, description="Confidence in this justification")
-    sub_justifications: List['JustificationBelief'] = Field(
-        default_factory=list,
-        description="Recursive justifications for this belief"
-    )
+    # Note: Removed sub_justifications to avoid recursive $ref (Gemini limitation)
+    # Justifications are kept flat - deeper chains built via graph traversal
 
 
 class ToolCallResult(BaseModel):
@@ -190,7 +188,6 @@ Cada passo (ToolCallResult) tem os seguintes campos:
      * `content`: Afirmação que justifica o delta
      * `context`: Domínio (e.g., "evidence", "observation", "inference")
      * `confidence_estimate`: Confiança nesta justificativa (0-1)
-     * `sub_justifications`: (opcional) Justificativas recursivas
 
    Exemplo:
    ```json
@@ -198,25 +195,26 @@ Cada passo (ToolCallResult) tem os seguintes campos:
      "delta": 0.2,
      "justifications": [
        {{
-         "content": "Stripe API retornou 504 timeout ontem",
+         "content": "Stripe API retornou 504 timeout às 14:32 UTC",
          "context": "observation",
-         "confidence_estimate": 0.95,
-         "sub_justifications": [
-           {{
-             "content": "Logs mostram timeout às 14:32 UTC",
-             "context": "evidence",
-             "confidence_estimate": 1.0
-           }}
-         ]
+         "confidence_estimate": 0.95
        }},
        {{
-         "content": "Latência de rede está alta hoje",
-         "context": "observation",
-         "confidence_estimate": 0.7
+         "content": "Latência de rede está variando entre 200-500ms",
+         "context": "measurement",
+         "confidence_estimate": 0.85
+       }},
+       {{
+         "content": "Logs mostram 3 timeouts nas últimas 24h",
+         "context": "evidence",
+         "confidence_estimate": 1.0
        }}
      ]
    }}
    ```
+
+   **Nota**: Mantenha justificativas específicas e atômicas. Chains mais profundas
+   são construídas automaticamente via grafo quando justificativas referenciam outras.
 
 **Filosofia de Precisão**:
 - Faça afirmações EXATAS, não genéricas
@@ -650,15 +648,9 @@ Also provide reasoning explaining why you extracted these beliefs.
                 "supports"
             )
 
-            # Recursively process sub-justifications
-            if just.sub_justifications:
-                sub_ids = await self._process_justifications(
-                    just.sub_justifications,
-                    target_belief_id=just_belief.id,
-                    depth=depth + 1,
-                    max_depth=max_depth
-                )
-                created_ids.extend(sub_ids)
+            # Note: Sub-justifications removed due to Gemini recursive schema limitation
+            # Deeper chains can be built by LLM creating new justifications
+            # that reference existing ones in their content
 
         return created_ids
 
