@@ -44,8 +44,8 @@ class BeliefExtraction(BaseModel):
 
 
 @dataclass
-class AssistantReply:
-    """Structured assistant reply returned to the CLI."""
+class ToolCallStep:
+    """Single step in a multi-step response"""
     text: str
     belief_id: str
     belief_value_guessed: float
@@ -53,6 +53,48 @@ class AssistantReply:
     applied_delta: float
     actual_confidence: float
     margin: float
+    error: float
+
+
+@dataclass
+class AssistantReply:
+    """Structured assistant reply returned to the CLI."""
+    steps: List[ToolCallStep]  # Multiple tool calls
+
+    @property
+    def text(self) -> str:
+        """Concatenate all step texts"""
+        return "\n\n".join(step.text for step in self.steps)
+
+    @property
+    def belief_id(self) -> str:
+        """Last belief ID"""
+        return self.steps[-1].belief_id if self.steps else ""
+
+    @property
+    def belief_value_guessed(self) -> float:
+        """Last guess"""
+        return self.steps[-1].belief_value_guessed if self.steps else 0.0
+
+    @property
+    def delta_requested(self) -> float:
+        """Total delta requested"""
+        return sum(step.delta_requested for step in self.steps)
+
+    @property
+    def applied_delta(self) -> float:
+        """Total delta applied"""
+        return sum(step.applied_delta for step in self.steps)
+
+    @property
+    def actual_confidence(self) -> float:
+        """Final confidence"""
+        return self.steps[-1].actual_confidence if self.steps else 0.0
+
+    @property
+    def margin(self) -> float:
+        """Margin from last step"""
+        return self.steps[-1].margin if self.steps else 0.1
 
 
 class JustificationBelief(BaseModel):
@@ -97,10 +139,37 @@ class ToolCallResult(BaseModel):
 
 DEFAULT_CONFIDENCE_MARGIN = 0.10
 
+class MultiStepResponse(BaseModel):
+    """Multiple reasoning steps in one response"""
+    steps: List[ToolCallResult] = Field(
+        ...,
+        min_length=1,
+        description="Lista de passos de raciocínio. Cada passo é uma interação com uma crença."
+    )
+
+
 RESPONSE_SYSTEM_PROMPT = f"""
 Você é o Cogito Belief Responder para o Baye Chat CLI.
 
-Sua saída DEVE ser um objeto JSON estruturado com os seguintes campos:
+Sua saída DEVE ser um objeto JSON com uma lista de `steps` (passos de raciocínio).
+
+Você pode (e DEVE quando apropriado) dividir sua resposta em múltiplos passos:
+- Cada passo é uma reflexão sobre UMA crença
+- Passos são exibidos sequencialmente ao usuário
+- Isso permite raciocínio multi-etapa natural
+
+**Estrutura**:
+```json
+{{
+  "steps": [
+    {{ "texto": "...", "belief_value_guessed": 0.73, "delta": 0, ... }},
+    {{ "texto": "...", "belief_value_guessed": 0.68, "delta": 0, ... }},
+    ...
+  ]
+}}
+```
+
+Cada passo (ToolCallResult) tem os seguintes campos:
 
 1. **`texto`** (string): Mensagem natural para o usuário. Explique sua resposta e raciocínio.
 
@@ -237,11 +306,11 @@ Also provide reasoning explaining why you extracted these beliefs.
 """
         )
 
-        # Agent separado para gerar respostas via tool único
+        # Agent separado para gerar respostas via múltiplos passos
         # Using output_type forces structured output
         self.response_agent = Agent(
             model,
-            output_type=ToolCallResult,
+            output_type=MultiStepResponse,
             system_prompt=RESPONSE_SYSTEM_PROMPT,
         )
 
@@ -305,9 +374,47 @@ Also provide reasoning explaining why you extracted these beliefs.
             extraction=extraction,
         )
 
-        # Get structured output from response agent
+        # Get structured output from response agent (multi-step)
         result = await self.response_agent.run(response_context)
-        llm_output: ToolCallResult = result.output
+        multi_step: MultiStepResponse = result.output
+
+        # Process each step sequentially
+        reply_steps = []
+
+        for step_idx, llm_output in enumerate(multi_step.steps):
+            step_result = await self._process_single_step(
+                llm_output,
+                active_belief,
+                step_idx=step_idx,
+                total_steps=len(multi_step.steps)
+            )
+            reply_steps.append(step_result)
+
+        # Build final reply with all steps
+        reply = AssistantReply(steps=reply_steps)
+
+        # Add to message history (concatenated text)
+        self.messages.append(Message(
+            role="assistant",
+            content=reply.text,
+            metadata={
+                "beliefs_extracted": len(extraction.beliefs),
+                "num_steps": len(reply_steps),
+                "total_delta": reply.delta_requested,
+                "final_confidence": reply.actual_confidence,
+            }
+        ))
+
+        return reply
+
+    async def _process_single_step(
+        self,
+        llm_output: ToolCallResult,
+        active_belief: Belief,
+        step_idx: int = 0,
+        total_steps: int = 1
+    ) -> ToolCallStep:
+        """Process a single step of multi-step response"""
 
         # Validate LLM's guess and calculate error
         belief = self.tracker.graph.beliefs[active_belief.id]
@@ -388,41 +495,17 @@ Also provide reasoning explaining why you extracted these beliefs.
             self._last_estimation_error[active_belief.id] = error
             self._can_use_delta[active_belief.id] = True
 
-        # Build final payload with actual values filled in
-        payload = ToolCallResult(
-            texto=llm_output.texto,
-            belief_value_guessed=llm_output.belief_value_guessed,
-            delta=llm_output.delta,
+        # Return step result
+        return ToolCallStep(
+            text=llm_output.texto.strip(),
             belief_id=active_belief.id,
-            actual_confidence=actual_conf,
+            belief_value_guessed=llm_output.belief_value_guessed,
+            delta_requested=llm_output.delta,
             applied_delta=applied_delta,
+            actual_confidence=actual_conf,
             margin=margin,
+            error=error,
         )
-
-        reply = AssistantReply(
-            text=payload.texto.strip(),
-            belief_id=payload.belief_id,
-            belief_value_guessed=payload.belief_value_guessed,
-            delta_requested=payload.delta,
-            applied_delta=payload.applied_delta,
-            actual_confidence=payload.actual_confidence,
-            margin=payload.margin,
-        )
-
-        self.messages.append(Message(
-            role="assistant",
-            content=reply.text,
-            metadata={
-                "beliefs_extracted": len(extraction.beliefs),
-                "belief_id": reply.belief_id,
-                "belief_value_guessed": reply.belief_value_guessed,
-                "delta": reply.delta_requested,
-                "applied_delta": reply.applied_delta,
-                "actual_confidence": reply.actual_confidence,
-            }
-        ))
-
-        return reply
 
     def _build_context(self) -> str:
         """Build conversation context for LLM"""

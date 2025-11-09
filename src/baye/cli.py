@@ -71,28 +71,52 @@ Type a message to start!
             self.console.print(f"[bold cyan]You:[/bold cyan] {content}")
         else:
             if isinstance(content, AssistantReply):
-                body = content.text
-                footer = (
-                    f"\n\n[dim]Belief {content.belief_id[:8]} | "
-                    f"Palpite: {content.belief_value_guessed:.2f} | "
-                    f"Valor registrado: {content.actual_confidence:.2f} | "
-                    f"Margem: ±{content.margin:.2f}[/dim]"
-                )
-                if abs(content.delta_requested) > 0 or abs(content.applied_delta) > 0:
-                    footer += (
-                        f"\n[dim]Delta pedido: {content.delta_requested:+.2f} | "
-                        f"Delta aplicado: {content.applied_delta:+.2f}[/dim]"
+                # Render multiple steps
+                for step_idx, step in enumerate(content.steps):
+                    # Step header
+                    if len(content.steps) > 1:
+                        step_num = f"[dim]Step {step_idx + 1}/{len(content.steps)}[/dim]\n"
+                    else:
+                        step_num = ""
+
+                    # Step body
+                    body = step_num + step.text
+
+                    # Step footer with metadata
+                    footer = (
+                        f"\n\n[dim]Belief {step.belief_id[:8]} | "
+                        f"Palpite: {step.belief_value_guessed:.2f} | "
+                        f"Real: {step.actual_confidence:.2f} | "
+                        f"Erro: {step.error:+.2f} | "
+                        f"Margem: ±{step.margin:.2f}[/dim]"
                     )
-                panel_text = body + footer
+
+                    if abs(step.delta_requested) > 0 or abs(step.applied_delta) > 0:
+                        footer += (
+                            f"\n[dim]Delta pedido: {step.delta_requested:+.2f} | "
+                            f"Delta aplicado: {step.applied_delta:+.2f}[/dim]"
+                        )
+
+                    panel_text = body + footer
+
+                    self.console.print(Panel(
+                        panel_text,
+                        title=f"🤖 Assistant{' (Step ' + str(step_idx + 1) + ')' if len(content.steps) > 1 else ''}",
+                        border_style="blue",
+                        box=box.ROUNDED
+                    ))
+
+                    # Small separator between steps
+                    if step_idx < len(content.steps) - 1:
+                        self.console.print("")
             else:
                 panel_text = str(content)
-
-            self.console.print(Panel(
-                panel_text,
-                title="🤖 Assistant",
-                border_style="blue",
-                box=box.ROUNDED
-            ))
+                self.console.print(Panel(
+                    panel_text,
+                    title="🤖 Assistant",
+                    border_style="blue",
+                    box=box.ROUNDED
+                ))
 
     def render_beliefs_table(self, beliefs: list, title: str = "Beliefs"):
         """Render beliefs as a table"""
