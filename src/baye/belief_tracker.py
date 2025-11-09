@@ -301,8 +301,17 @@ class BeliefTracker:
             "contradictors": len(belief.contradicted_by),
         }
 
-    def explain_confidence(self, belief_id: BeliefID) -> Dict:
-        """Explain how belief's confidence was derived"""
+    def explain_confidence(self, belief_id: BeliefID, max_depth: int = 3) -> Dict:
+        """
+        Explain how belief's confidence was derived with recursive justifications
+
+        Args:
+            belief_id: ID of belief to explain
+            max_depth: Maximum depth for recursive justification tree
+
+        Returns:
+            Dict with belief stats, neighbors, and recursive justification tree
+        """
         stats = self.get_belief_stats(belief_id)
         belief = self.graph.beliefs.get(belief_id)
 
@@ -315,18 +324,58 @@ class BeliefTracker:
             self.get_belief_stats(nid) for nid in neighbors
         ]
 
-        # Get graph relationships
-        supporters = [self.graph.beliefs[sid] for sid in belief.supported_by]
+        # Get graph relationships with recursive justifications
+        supporters = self._get_recursive_supporters(belief, depth=0, max_depth=max_depth)
         contradictors = [self.graph.beliefs[cid] for cid in belief.contradicted_by]
 
         return {
             "belief": stats,
             "neighbors": neighbor_info,
-            "supporters": [{"id": s.id, "content": s.content, "confidence": s.confidence}
-                          for s in supporters],
+            "supporters": supporters,
             "contradictors": [{"id": c.id, "content": c.content, "confidence": c.confidence}
                              for c in contradictors],
         }
+
+    def _get_recursive_supporters(
+        self,
+        belief: Belief,
+        depth: int = 0,
+        max_depth: int = 3
+    ) -> List[Dict]:
+        """
+        Recursively get supporters (justifications) of a belief.
+
+        Returns a tree structure showing the full justification chain.
+        """
+        if depth >= max_depth:
+            return []
+
+        supporters = []
+        for sid in belief.supported_by:
+            supporter = self.graph.beliefs.get(sid)
+            if not supporter:
+                continue
+
+            supporter_dict = {
+                "id": supporter.id,
+                "content": supporter.content,
+                "confidence": supporter.confidence,
+                "context": supporter.context,
+            }
+
+            # Recursively get this supporter's supporters
+            sub_supporters = self._get_recursive_supporters(
+                supporter,
+                depth=depth + 1,
+                max_depth=max_depth
+            )
+
+            if sub_supporters:
+                supporter_dict["supporters"] = sub_supporters
+
+            supporters.append(supporter_dict)
+
+        return supporters
 
     def get_training_summary(self) -> Dict:
         """Get summary of training signals"""

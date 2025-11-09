@@ -153,13 +153,10 @@ Type a message to start!
                     f"  • [{n['confidence']:.2f}] {n['content'][:70]}"
                 )
 
-        # Supporters
+        # Supporters (Justifications)
         if explanation.get("supporters"):
-            self.console.print("\n[bold green]Supporters:[/bold green]")
-            for s in explanation["supporters"]:
-                self.console.print(
-                    f"  ✓ [{s['confidence']:.2f}] {s['content'][:70]}"
-                )
+            self.console.print("\n[bold green]Justifications (Support):[/bold green]")
+            self._render_justification_tree(explanation["supporters"], indent=1)
 
         # Contradictors
         if explanation.get("contradictors"):
@@ -168,6 +165,24 @@ Type a message to start!
                 self.console.print(
                     f"  ✗ [{c['confidence']:.2f}] {c['content'][:70]}"
                 )
+
+    def _render_justification_tree(self, supporters: list, indent: int = 0):
+        """Recursively render justification tree"""
+        prefix = "  " * indent + ("└─ " if indent > 0 else "")
+
+        for s in supporters:
+            # Truncate content if too long
+            content = s['content'][:60] + "..." if len(s['content']) > 60 else s['content']
+
+            self.console.print(
+                f"{prefix}[bold]✓[/bold] [{s['confidence']:.2f}] {content} "
+                f"[dim]({s.get('id', 'unknown')[:8]})[/dim]"
+            )
+
+            # Recursively show this belief's supporters (if it has any)
+            # This creates the justification chain visualization
+            if 'supporters' in s and s['supporters']:
+                self._render_justification_tree(s['supporters'], indent + 1)
 
     def render_update(self, update):
         """Render belief update result"""

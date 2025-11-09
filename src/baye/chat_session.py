@@ -55,16 +55,31 @@ class AssistantReply:
     margin: float
 
 
+class JustificationBelief(BaseModel):
+    """A belief that justifies a confidence change"""
+    content: str = Field(..., description="The justification statement")
+    context: str = Field(default="justification", description="Context/domain")
+    confidence_estimate: float = Field(..., ge=0.0, le=1.0, description="Confidence in this justification")
+    sub_justifications: List['JustificationBelief'] = Field(
+        default_factory=list,
+        description="Recursive justifications for this belief"
+    )
+
+
 class ToolCallResult(BaseModel):
     """Payload returned by the update_belief_tool."""
     texto: str = Field(..., description="Mensagem que será exibida para o usuário final.")
     belief_value_guessed: float = Field(
         ..., ge=0.0, le=1.0,
-        description="Palpite da LLM para a confiança atual da crença ativa."
+        description="Palpite PRECISO da LLM para a confiança atual da crença ativa. Seja específico! Erro é esperado e será usado para aprendizado."
     )
     delta: float = Field(
         0.0, ge=-1.0, le=1.0,
         description="Ajuste solicitado para a crença (0 mantém o valor atual)."
+    )
+    justifications: List[JustificationBelief] = Field(
+        default_factory=list,
+        description="OBRIGATÓRIO quando delta != 0: Lista de crenças que justificam este ajuste. Mínimo 1 justificativa."
     )
     belief_id: str = Field(..., description="ID interno da crença manipulada.")
     actual_confidence: float = Field(
@@ -87,27 +102,60 @@ Você é o Cogito Belief Responder para o Baye Chat CLI.
 
 Sua saída DEVE ser um objeto JSON estruturado com os seguintes campos:
 
-1. `texto` (string): Mensagem completa e natural para o usuário. Explique como as crenças ativas influenciaram sua resposta.
+1. **`texto`** (string): Mensagem natural para o usuário. Explique sua resposta e raciocínio.
 
-2. `belief_value_guessed` (float, 0-1): Seu melhor palpite para a confiança atual da crença ativa baseado no contexto.
+2. **`belief_value_guessed`** (float, 0-1):
+   - Seu palpite PRECISO e ESPECÍFICO para a confiança atual da crença ativa
+   - NÃO arredonde para 0.5, 0.6, etc. Use valores exatos: 0.73, 0.82, 0.47
+   - **Erro é ESPERADO e ÚTIL** - será usado para calibração e meta-aprendizado
+   - Quanto mais preciso você tentar ser, melhor o sistema aprende
 
-3. `delta` (float, -1 a 1): Ajuste de confiança solicitado:
-   - Use 0 quando seu palpite estiver dentro da margem permitida
-   - Positivo aumenta confiança, negativo reduz
-   - Se o sistema reclamar que ultrapassou a margem, ajuste o delta
+3. **`delta`** (float, -1 a 1): Ajuste solicitado
+   - Use 0 quando não quer mudar a crença
+   - Positivo aumenta, negativo reduz
 
-4. `belief_id` (string): ID da crença (será preenchido automaticamente)
+4. **`justifications`** (lista de objetos): **OBRIGATÓRIO quando delta != 0**
+   - Cada justificativa é uma crença que SUPORTA esta mudança
+   - Mínimo 1 justificativa se delta != 0
+   - Cada justificativa tem:
+     * `content`: Afirmação que justifica o delta
+     * `context`: Domínio (e.g., "evidence", "observation", "inference")
+     * `confidence_estimate`: Confiança nesta justificativa (0-1)
+     * `sub_justifications`: (opcional) Justificativas recursivas
 
-5. `actual_confidence` (float, 0-1): Confiança real (será preenchido automaticamente)
+   Exemplo:
+   ```json
+   {{
+     "delta": 0.2,
+     "justifications": [
+       {{
+         "content": "Stripe API retornou 504 timeout ontem",
+         "context": "observation",
+         "confidence_estimate": 0.95,
+         "sub_justifications": [
+           {{
+             "content": "Logs mostram timeout às 14:32 UTC",
+             "context": "evidence",
+             "confidence_estimate": 1.0
+           }}
+         ]
+       }},
+       {{
+         "content": "Latência de rede está alta hoje",
+         "context": "observation",
+         "confidence_estimate": 0.7
+       }}
+     ]
+   }}
+   ```
 
-6. `applied_delta` (float): Delta aplicado (será preenchido automaticamente)
+**Filosofia de Precisão**:
+- Faça afirmações EXATAS, não genéricas
+- 0.73 é melhor que 0.7
+- Erro médio de 0.15 é esperado - isso é NORMAL e BOM!
+- O sistema usa seus erros para aprender padrões de calibração
 
-7. `margin` (float): Margem de tolerância (será preenchida automaticamente)
-
-**Importante**:
-- Mantenha tom natural e conversacional no `texto`
-- Se incerto, use `delta=0` e mencione a incerteza no texto
-- Margem padrão: ±{DEFAULT_CONFIDENCE_MARGIN:.2f}
+**Margem padrão**: ±{DEFAULT_CONFIDENCE_MARGIN:.2f}
 """
 
 
@@ -237,15 +285,31 @@ Also provide reasoning explaining why you extracted these beliefs.
         result = await self.response_agent.run(response_context)
         llm_output: ToolCallResult = result.output
 
+        # Validate justifications requirement
+        if abs(llm_output.delta) > 0 and not llm_output.justifications:
+            raise ValueError(
+                f"Delta is {llm_output.delta} but no justifications provided. "
+                "Justifications are REQUIRED when delta != 0."
+            )
+
         # Validate LLM's guess and apply delta
         belief = self.tracker.graph.beliefs[active_belief.id]
         margin = self._get_margin(active_belief.id)
         actual_conf = belief.confidence
         diff = abs(actual_conf - llm_output.belief_value_guessed)
 
-        # Apply delta if provided or if guess is outside margin
+        # Apply delta if provided
         applied_delta = 0.0
+        justification_ids = []
+
         if abs(llm_output.delta) > 0:
+            # Process justifications recursively
+            justification_ids = await self._process_justifications(
+                llm_output.justifications,
+                target_belief_id=active_belief.id
+            )
+
+            # Apply delta with justifications in provenance
             update = self.tracker.apply_manual_delta(
                 active_belief.id,
                 llm_output.delta,
@@ -253,6 +317,8 @@ Also provide reasoning explaining why you extracted these beliefs.
                     "source": "llm_structured_output",
                     "texto": llm_output.texto,
                     "guess": llm_output.belief_value_guessed,
+                    "error": diff,
+                    "justification_ids": justification_ids,
                 },
             )
             applied_delta = update.new_confidence - update.old_confidence
@@ -397,6 +463,57 @@ Also provide reasoning explaining why you extracted these beliefs.
     def _get_margin(self, belief_id: str) -> float:
         """Return the confidence margin for a belief."""
         return self._belief_margins.get(belief_id, self.confidence_margin)
+
+    async def _process_justifications(
+        self,
+        justifications: List[JustificationBelief],
+        target_belief_id: str,
+        depth: int = 0,
+        max_depth: int = 5
+    ) -> List[str]:
+        """
+        Recursively process justifications and build justification graph.
+
+        Each justification becomes a belief that SUPPORTS the target belief.
+        Sub-justifications create deeper chains.
+
+        Returns:
+            List of belief IDs created for justifications
+        """
+        if depth >= max_depth:
+            print(f"WARNING: Max justification depth {max_depth} reached")
+            return []
+
+        created_ids = []
+
+        for just in justifications:
+            # Create belief for this justification
+            just_belief = self.tracker.add_belief(
+                content=just.content,
+                context=just.context,
+                initial_confidence=just.confidence_estimate,
+                auto_estimate=False,
+            )
+            created_ids.append(just_belief.id)
+
+            # Link justification → target (SUPPORTS relationship)
+            self.tracker.graph.link_beliefs(
+                just_belief.id,
+                target_belief_id,
+                "supports"
+            )
+
+            # Recursively process sub-justifications
+            if just.sub_justifications:
+                sub_ids = await self._process_justifications(
+                    just.sub_justifications,
+                    target_belief_id=just_belief.id,
+                    depth=depth + 1,
+                    max_depth=max_depth
+                )
+                created_ids.extend(sub_ids)
+
+        return created_ids
 
     async def handle_feedback(
         self,
