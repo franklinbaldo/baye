@@ -67,6 +67,59 @@ Type a message to start!
         """
         self.console.print(Panel(Markdown(welcome), title="Welcome", border_style="green"))
 
+        # Display mode-specific explanation
+        mode_explanation = self._get_mode_explanation()
+        self.console.print(Panel(
+            Markdown(mode_explanation),
+            title=f"📊 Mode: {self.mode.upper()}",
+            border_style="yellow"
+        ))
+
+    def _get_mode_explanation(self) -> str:
+        """Get mode-specific explanation banner"""
+        if self.mode == "claim-based":
+            return """
+## Claim-Based Mode
+
+The AI validates **specific factual claims** from its responses:
+- Each claim gets a confidence estimate: **-1 to +1**
+- **Negative values = disbelief** (AI thinks it's false)
+- **Positive values = belief** (AI thinks it's true)
+- **Zero = maximum uncertainty** (AI doesn't know)
+
+**Scale interpretation:**
+- `-0.9 to -0.5`: Strong disbelief
+- `-0.5 to -0.1`: Weak disbelief
+- `0.0`: Maximum uncertainty
+- `0.1 to 0.5`: Weak belief
+- `0.5 to 0.9`: Strong belief
+
+**Key principle**: The AI keeps the claim text constant and uses confidence to express belief/disbelief.
+            """
+        else:  # legacy mode
+            return """
+## Legacy Mode
+
+The AI validates beliefs using a **single belief per response**:
+- Each response includes a belief with confidence: **-1 to +1**
+- **Negative values = disbelief** (AI thinks it's false)
+- **Positive values = belief** (AI thinks it's true)
+- **Zero = maximum uncertainty** (AI doesn't know)
+
+**Scale interpretation:**
+- `-0.9 to -0.5`: Strong disbelief
+- `-0.5 to -0.1`: Weak disbelief
+- `0.0`: Maximum uncertainty
+- `0.1 to 0.5`: Weak belief
+- `0.5 to 0.9`: Strong belief
+
+**Key principle**: The AI keeps the statement text constant and uses confidence to express belief/disbelief.
+
+**Example**: If asked "Is Obama president?", AI will say:
+- "Obama é presidente dos EUA" with confidence **-0.85** (strong disbelief)
+- NOT "Obama NÃO é presidente" with confidence 0.85 (this inverts everything!)
+            """
+
     def render_message(self, role: str, content):
         """Render a chat message"""
         if role == "user":
@@ -130,32 +183,77 @@ Type a message to start!
 
         # Add claim validation footer
         footer = "\n\n[dim]Claims validated:[/dim]\n"
+        footer += "[dim]Legend: value? = no ground truth (system trusted LLM), ± = error without validation[/dim]\n"
+        turn_score = 0.0
         for claim in reply.validated_claims:
-            # Color code based on error magnitude
-            error_abs = abs(claim.error)
-            if error_abs < claim.margin * 0.5:
-                status = "[green]✓[/green]"
-            elif error_abs < claim.margin:
-                status = "[yellow]✓[/yellow]"
+            # Calculate points for this claim
+            if claim.within_margin:
+                points = abs(claim.estimate)
+                turn_score += points
+                points_str = f"[green]+{points:.2f}pts[/green]"
+
+                # Color code based on error magnitude (within margin)
+                error_abs = abs(claim.error)
+                if error_abs < claim.margin * 0.5:
+                    status = "[green]✓[/green]"  # Excellent calibration
+                else:
+                    status = "[yellow]✓[/yellow]"  # Good calibration (within margin)
             else:
-                status = "[red]✗[/red]"
+                # Outside margin = no points
+                points_str = "[red]+0.00pts[/red]"
+                status = "[red]✗[/red]"  # Failed validation
 
             # Truncate claim if too long
             claim_text = claim.claim_content
             if len(claim_text) > 50:
                 claim_text = claim_text[:47] + "..."
 
+            # Format actual value with context
+            # actual ~0.0 means K-NN has no data (uncertainty), NOT false!
+            if abs(claim.actual) < 0.1:
+                actual_str = f"[yellow]{claim.actual:.2f}?[/yellow]"  # ? = uncertain/no data
+                err_str = f"[dim]±{abs(claim.error):.2f}[/dim]"  # Show as ± since no ground truth
+            else:
+                actual_str = f"{claim.actual:.2f}"
+                err_str = f"{claim.error:+.2f}"
+
             footer += (
                 f"  {status} [dim]{claim_text}[/dim] "
-                f"[{claim.estimate:.2f} → {claim.actual:.2f}, err: {claim.error:+.2f}]\n"
+                f"[{claim.estimate:.2f} → {actual_str}, err: {err_str}] {points_str}\n"
             )
 
+        # Render main response
         self.console.print(Panel(
             panel_text + footer,
             title="🤖 Assistant (claim-based)",
             border_style="blue",
             box=box.ROUNDED
         ))
+
+        # Render statistics panel
+        if self.session:
+            total_score = self.session.score
+            success_count = self.session.successful_claims
+            failure_count = self.session.failed_claims
+            total_claims = success_count + failure_count
+            success_rate = (success_count / total_claims * 100) if total_claims > 0 else 0
+
+            stats_table = Table.grid(padding=(0, 2))
+            stats_table.add_column(style="cyan", justify="right")
+            stats_table.add_column(style="white")
+
+            stats_table.add_row("🎮 Turn Score:", f"[bold green]+{turn_score:.2f}pts[/bold green]")
+            stats_table.add_row("📊 Total Score:", f"[bold]{total_score:.2f}pts[/bold]")
+            stats_table.add_row("✓ Successes:", f"[green]{success_count}[/green]")
+            stats_table.add_row("✗ Failures:", f"[red]{failure_count}[/red]")
+            stats_table.add_row("📈 Success Rate:", f"{success_rate:.1f}%")
+
+            self.console.print(Panel(
+                stats_table,
+                title="📊 Session Statistics",
+                border_style="cyan",
+                box=box.ROUNDED
+            ))
 
     def render_beliefs_table(self, beliefs: list, title: str = "Beliefs"):
         """Render beliefs as a table"""

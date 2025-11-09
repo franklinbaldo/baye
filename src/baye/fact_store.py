@@ -10,6 +10,9 @@ from typing import List, Dict, Optional, Tuple
 from datetime import datetime
 from enum import Enum
 import uuid
+import re
+
+from baye.vector_store import VectorStore
 
 
 class InputMode(str, Enum):
@@ -29,27 +32,29 @@ class Fact:
 
     Every piece of content that enters the LLM context becomes a Fact.
     """
-    # Identity
+    # Identity (required)
     id: str  # UUID for global reference
     seq_id: int  # Sequential ID within session (1, 2, 3, ...)
 
-    # Content
+    # Content (required)
     content: str  # The actual content (chunk)
-    chunk_index: int = 0  # Index if content was chunked (0 for single chunk)
-    total_chunks: int = 1  # Total chunks from same source
 
-    # Provenance
+    # Provenance (required)
     input_mode: InputMode  # How it entered
     author_uuid: str  # UUID of who/what created this
     source_context_id: str  # UUID of the parent context
 
-    # Temporal
-    created_at: datetime = field(default_factory=datetime.now)
+    # Chunking (optional with defaults)
+    chunk_index: int = 0  # Index if content was chunked (0 for single chunk)
+    total_chunks: int = 1  # Total chunks from same source
 
-    # Confidence
+    # Temporal (optional with default) - ISO 8601 format
+    created_at: str = field(default_factory=lambda: datetime.now().isoformat())
+
+    # Confidence (optional with default)
     confidence: float = 1.0
 
-    # Metadata
+    # Metadata (optional with default)
     metadata: Dict = field(default_factory=dict)
 
     def __repr__(self):
@@ -103,13 +108,16 @@ class FactStore:
     def __init__(
         self,
         estimator=None,
-        chunk_size: int = 500,
-        user_uuid: Optional[str] = None
+        max_tokens_per_chunk: int = 1500,  # Conservative limit (text-embedding-004 max: 2048)
+        chunk_overlap_tokens: int = 100,   # Overlap for context continuity
+        user_uuid: Optional[str] = None,
+        persist_directory: str = ".baye_data"
     ):
-        self.facts: Dict[str, Fact] = {}  # UUID → Fact
+        self.facts: Dict[str, Fact] = {}  # UUID → Fact (in-memory cache)
         self.facts_by_seq: Dict[int, Fact] = {}  # seq_id → Fact
         self.estimator = estimator
-        self.chunk_size = chunk_size
+        self.max_tokens_per_chunk = max_tokens_per_chunk
+        self.chunk_overlap_tokens = chunk_overlap_tokens
 
         # Sequential ID counter
         self._next_seq_id = 1
@@ -122,6 +130,43 @@ class FactStore:
 
         # System UUID
         self.system_uuid = "system_00000000-0000-0000-0000-000000000000"
+
+        # Persistent vector store
+        self.vector_store = VectorStore(persist_directory=persist_directory)
+
+        # Load existing facts from vector store on init
+        self._load_existing_facts()
+
+    def _load_existing_facts(self):
+        """Load facts from persistent vector store into memory"""
+        stored_facts = self.vector_store.get_all_facts()
+
+        for fact_data in stored_facts:
+            fact_id = fact_data['id']
+            metadata = fact_data['metadata']
+
+            # Reconstruct Fact object
+            fact = Fact(
+                id=fact_id,
+                seq_id=metadata.get('seq_id', 0),
+                content=fact_data['content'],
+                chunk_index=metadata.get('chunk_index', 0),
+                total_chunks=metadata.get('total_chunks', 1),
+                input_mode=InputMode(metadata.get('input_mode', 'manual')),
+                author_uuid=metadata.get('author_uuid', self.user_uuid),
+                source_context_id=metadata.get('source_context_id', ''),
+                confidence=metadata.get('confidence', 1.0),
+                metadata=metadata.get('extra_metadata', {}),
+                created_at=datetime.fromisoformat(metadata.get('created_at', datetime.now().isoformat()))
+            )
+
+            # Add to in-memory dictionaries
+            self.facts[fact_id] = fact
+            self.facts_by_seq[fact.seq_id] = fact
+
+            # Update seq_id counter
+            if fact.seq_id >= self._next_seq_id:
+                self._next_seq_id = fact.seq_id + 1
 
     def register_tool(self, tool_name: str, tool_uuid: Optional[str] = None) -> str:
         """Register a tool and return its UUID"""
@@ -149,8 +194,9 @@ class FactStore:
 
         ALL content entering LLM context should use this method.
         """
-        # Chunk content if needed
-        if auto_chunk and len(content) > self.chunk_size:
+        # Chunk content if needed (based on token estimate)
+        estimated_tokens = self._estimate_tokens(content)
+        if auto_chunk and estimated_tokens > self.max_tokens_per_chunk:
             chunks = self._chunk_text(content)
         else:
             chunks = [content]
@@ -176,17 +222,110 @@ class FactStore:
                 metadata=metadata or {},
             )
 
+            # Add to in-memory cache
             self.facts[fact_id] = fact
             self.facts_by_seq[seq_id] = fact
             created_facts.append(fact)
 
+            # Persist to vector store
+            # Flatten metadata (ChromaDB doesn't support nested dicts)
+            flat_metadata = {
+                'seq_id': seq_id,
+                'chunk_index': chunk_idx,
+                'total_chunks': total_chunks,
+                'input_mode': input_mode.value,
+            }
+            # Add user metadata with prefix to avoid conflicts
+            if metadata:
+                for k, v in metadata.items():
+                    # Only add simple types (str, int, float, bool)
+                    if isinstance(v, (str, int, float, bool)):
+                        flat_metadata[f'meta_{k}'] = v
+
+            self.vector_store.add_fact(
+                content=chunk_content,
+                fact_id=fact_id,
+                confidence=confidence,
+                author_uuid=author_uuid,
+                source_context_id=source_context_id,
+                metadata=flat_metadata
+            )
+
         return created_facts
 
+    def _estimate_tokens(self, text: str) -> int:
+        """
+        Estimate token count (rough approximation: 1 token ≈ 4 chars)
+        For more accuracy, use tiktoken, but this is good enough for chunking
+        """
+        return len(text) // 4
+
     def _chunk_text(self, text: str) -> List[str]:
-        """Chunk text by character count"""
+        """
+        Chunk text by token count with overlap (for embedding model context window)
+
+        Based on ChromaDB best practices:
+        - Chunks should fit within embedding model's context window (2048 tokens for text-embedding-004)
+        - Use overlap to maintain context continuity
+        - Split on sentence boundaries when possible
+        """
+        estimated_tokens = self._estimate_tokens(text)
+
+        # If text fits in one chunk, return as-is
+        if estimated_tokens <= self.max_tokens_per_chunk:
+            return [text]
+
         chunks = []
-        for i in range(0, len(text), self.chunk_size):
-            chunks.append(text[i:i + self.chunk_size])
+
+        # Split by sentences first (better semantic boundaries)
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+
+        current_chunk = ""
+        current_tokens = 0
+
+        for sentence in sentences:
+            sentence_tokens = self._estimate_tokens(sentence)
+
+            # If single sentence exceeds max, split by words
+            if sentence_tokens > self.max_tokens_per_chunk:
+                # Flush current chunk
+                if current_chunk:
+                    chunks.append(current_chunk.strip())
+                    current_chunk = ""
+                    current_tokens = 0
+
+                # Split long sentence by words
+                words = sentence.split()
+                for word in words:
+                    word_tokens = self._estimate_tokens(word)
+                    if current_tokens + word_tokens > self.max_tokens_per_chunk:
+                        chunks.append(current_chunk.strip())
+                        # Add overlap from end of previous chunk
+                        overlap_words = current_chunk.split()[-self.chunk_overlap_tokens:]
+                        current_chunk = " ".join(overlap_words) + " " + word
+                        current_tokens = self._estimate_tokens(current_chunk)
+                    else:
+                        current_chunk += " " + word
+                        current_tokens += word_tokens
+
+            # Normal case: add sentence to current chunk
+            elif current_tokens + sentence_tokens <= self.max_tokens_per_chunk:
+                current_chunk += " " + sentence
+                current_tokens += sentence_tokens
+
+            # Chunk is full, start new one with overlap
+            else:
+                chunks.append(current_chunk.strip())
+
+                # Create overlap from end of previous chunk
+                overlap_text = " ".join(current_chunk.split()[-self.chunk_overlap_tokens:])
+                current_chunk = overlap_text + " " + sentence
+                current_tokens = self._estimate_tokens(current_chunk)
+
+        # Add final chunk
+        if current_chunk.strip():
+            chunks.append(current_chunk.strip())
+
         return chunks
 
     def get_fact(self, fact_id: str) -> Optional[Fact]:
@@ -222,40 +361,50 @@ class FactStore:
         belief_graph=None
     ) -> List[Tuple[str, str, float, str]]:
         """
-        Find facts (and optionally beliefs) that contradict content
+        Find facts (and optionally beliefs) that MIGHT contradict content
+
+        Uses vector store semantic search to find related facts.
+        The caller must determine if they actually contradict.
 
         Returns:
-            List of (type, id, confidence, content) tuples
+            List of (type, id, confidence, content) tuples sorted by confidence
         """
-        contradictions = []
+        candidates = []
 
-        # Search facts
-        for fact in self.facts.values():
-            similarity = self._simple_similarity(content, fact.content)
-            # Low similarity might indicate contradiction
-            if similarity < 0.3:
-                contradictions.append((
-                    "fact",
-                    fact.id,
-                    fact.confidence,
-                    fact.content
-                ))
+        # Search facts using vector store (semantic similarity)
+        similar_facts = self.vector_store.find_contradicting_facts(
+            query=content,
+            k=k * 2,  # Get more to filter
+            similarity_threshold=0.5  # Moderate similarity threshold
+        )
 
-        # Search beliefs if requested
+        for fact_id, fact_content, confidence, metadata in similar_facts:
+            candidates.append((
+                "fact",
+                fact_id,
+                confidence,
+                fact_content,
+                1.0  # Placeholder for similarity (vector store uses distance)
+            ))
+
+        # Search beliefs if requested (still using simple similarity for now)
         if include_beliefs and belief_graph:
             for belief in belief_graph.beliefs.values():
                 similarity = self._simple_similarity(content, belief.content)
-                if similarity < 0.3:
-                    contradictions.append((
+                if similarity > 0.3:
+                    candidates.append((
                         "belief",
                         belief.id,
                         belief.confidence,
-                        belief.content
+                        belief.content,
+                        similarity
                     ))
 
-        # Sort by confidence and take top k
-        contradictions.sort(key=lambda x: x[2], reverse=True)
-        return contradictions[:k]
+        # Sort by similarity first (most relevant), then by confidence
+        candidates.sort(key=lambda x: (x[4], abs(x[2])), reverse=True)
+
+        # Return without similarity score
+        return [(t, i, c, txt) for t, i, c, txt, _ in candidates[:k]]
 
     def _simple_similarity(self, text1: str, text2: str) -> float:
         """Simple word overlap similarity"""

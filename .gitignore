@@ -59,3 +59,7 @@ Desktop.ini
 # Misc
 *.log
 .cache/
+
+# Baye data
+.baye_data/
+.baye_test_data/

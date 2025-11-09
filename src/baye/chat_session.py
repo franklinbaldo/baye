@@ -9,6 +9,7 @@ from typing import List, Dict, Optional, Callable, Any
 from datetime import datetime
 import asyncio
 import warnings
+import uuid
 
 from pydantic_ai import Agent
 from pydantic import BaseModel, Field
@@ -19,7 +20,8 @@ warnings.filterwarnings('ignore', category=UserWarning, module='pydantic_ai')
 from .belief_tracker import BeliefTracker, BeliefUpdate
 from .belief_types import Belief
 from .llm_agents import detect_relationship, check_gemini_api_key
-from .fact_store import FactStore, Fact
+from .fact_store import FactStore, Fact, InputMode
+from .tools import ToolRegistry
 
 
 @dataclass
@@ -35,7 +37,7 @@ class ExtractedBelief(BaseModel):
     """A single extracted belief"""
     content: str = Field(..., description="The belief statement")
     context: str = Field(default="general", description="Domain or context")
-    confidence_estimate: float = Field(default=0.5, ge=0.0, le=1.0, description="Estimated confidence")
+    confidence_estimate: float = Field(default=0.0, gt=-1.0, lt=1.0, description="Estimated confidence (-1 < x < 1)")
 
 
 class BeliefExtraction(BaseModel):
@@ -102,12 +104,19 @@ class AssistantReply:
 # CLAIM-BASED MODE - New architecture for granular claim validation
 # ============================================================================
 
+class ToolCall(BaseModel):
+    """Request to use a tool"""
+    tool: str = Field(description="Tool name: 'python', 'query_facts', or 'query_beliefs'")
+    parameters: Dict[str, Any] = Field(description="REQUIRED: Tool-specific parameters dict. For python: {'code': 'print(2+2)'}")
+    reasoning: str = Field(description="Why you're using this tool")
+
+
 class ValidatedClaim(BaseModel):
     """Single factual claim that needs validation"""
     content: str = Field(description="The claim/assertion being made")
     confidence_estimate: float = Field(
-        ge=0.0, le=1.0,
-        description="Your precise confidence in this claim (e.g., 0.73, not 0.7)"
+        gt=-1.0, lt=1.0,
+        description="Your precise confidence in this claim: -1 < x < 1 (negative=disbelief, positive=belief, zero=uncertainty)"
     )
     context: str = Field(
         default="general",
@@ -117,9 +126,13 @@ class ValidatedClaim(BaseModel):
 
 class ClaimBasedResponse(BaseModel):
     """Response structured as list of validated claims"""
+    tool_calls: Optional[List[ToolCall]] = Field(
+        default=None,
+        description="Optional tool calls to execute BEFORE making claims"
+    )
     claims: List[ValidatedClaim] = Field(
         min_length=1,
-        description="List of factual claims in your response"
+        description="List of factual claims - GRANULARIZE! Break into 3-5+ atomic claims, end with summary claim"
     )
     response_text: str = Field(
         description="Natural language response to user (can reference claims)"
@@ -151,21 +164,27 @@ class ClaimBasedReply:
 
 class ClaimCalibrationError(ValueError):
     """Raised when a claim is outside confidence margin"""
-    def __init__(self, claim: str, estimate: float, actual: float, margin: float, error: float):
+    def __init__(self, claim: str, estimate: float, actual: float, margin: float, error: float, message: str = None):
         self.claim = claim
         self.estimate = estimate
         self.actual = actual
         self.margin = margin
         self.error = error
 
-        super().__init__(
-            f"❌ CLAIM VALIDATION ERROR\n\n"
-            f"Claim: \"{claim}\"\n"
-            f"Your estimate: {estimate:.3f}\n"
-            f"K-NN estimate: {actual:.3f} ±{margin:.2f}\n"
-            f"Error: {error:+.3f} (OUTSIDE MARGIN)\n\n"
-            f"This claim failed validation. Use delta=0 and revise your claims!"
-        )
+        # Use custom message if provided, otherwise use default
+        if message:
+            error_message = message
+        else:
+            error_message = (
+                f"❌ CLAIM VALIDATION ERROR\n\n"
+                f"Claim: \"{claim}\"\n"
+                f"Your estimate: {estimate:.3f}\n"
+                f"K-NN estimate: {actual:.3f} ±{margin:.2f}\n"
+                f"Error: {error:+.3f} (OUTSIDE MARGIN)\n\n"
+                f"This claim failed validation. Use delta=0 and revise your claims!"
+            )
+
+        super().__init__(error_message)
 
 
 # ============================================================================
@@ -181,7 +200,7 @@ class JustificationBelief(BaseModel):
     """A belief that justifies a confidence change"""
     content: str = Field(..., description="The justification statement")
     context: str = Field(default="justification", description="Context/domain")
-    confidence_estimate: float = Field(..., ge=0.0, le=1.0, description="Confidence in this justification")
+    confidence_estimate: float = Field(..., gt=-1.0, lt=1.0, description="Confidence in this justification (-1 < x < 1)")
     # Note: Removed sub_justifications to avoid recursive $ref (Gemini limitation)
     # Justifications are kept flat - deeper chains built via graph traversal
 
@@ -207,8 +226,30 @@ class ToolCallResult(BaseModel):
     """Payload returned by the update_belief_tool."""
     texto: str = Field(..., description="Mensagem que será exibida para o usuário final.")
     belief_value_guessed: float = Field(
-        ..., ge=0.0, le=1.0,
-        description="Palpite PRECISO da LLM para a confiança atual da crença ativa. Seja específico! Erro é esperado e será usado para aprendizado."
+        ..., gt=-1.0, lt=1.0,
+        description="""Palpite PRECISO para confiança: -1 < valor < 1 (bounds EXCLUSIVOS)
+
+        ESCALA DE CRENÇA:
+        -0.9 a -0.5: Descrença forte (você acredita fortemente que NÃO é verdade)
+        -0.5 a -0.1: Descrença fraca (você acha que provavelmente não é verdade)
+         0.0:        Máxima incerteza (você realmente não sabe)
+         0.1 a  0.5: Crença fraca (você acha que provavelmente é verdade)
+         0.5 a  0.9: Crença forte (você acredita fortemente que É verdade)
+
+        CRÍTICO: Mantenha o TEXTO da afirmação CONSTANTE.
+        Use valores NEGATIVOS para expressar descrença.
+        NÃO negue o statement e use valor positivo!
+
+        Exemplo CORRETO:
+        statement: "Barack Obama é presidente dos EUA"
+        belief_value_guessed: -0.85  (descrença forte - você sabe que ele NÃO é)
+
+        Exemplo ERRADO:
+        statement: "Barack Obama NÃO é presidente"
+        belief_value_guessed: 0.85  (isso inverte o significado!)
+
+        Seja preciso: use -0.73, 0.82, -0.47, não arredonde!
+        """
     )
     delta: float = Field(
         0.0, ge=-1.0, le=1.0,
@@ -220,8 +261,8 @@ class ToolCallResult(BaseModel):
     )
     belief_id: str = Field(..., description="ID interno da crença manipulada.")
     actual_confidence: float = Field(
-        ..., ge=0.0, le=1.0,
-        description="Confiança após o processamento do tool."
+        ..., gt=-1.0, lt=1.0,
+        description="Confiança após o processamento do tool (-1 < x < 1)."
     )
     applied_delta: float = Field(
         0.0, description="Delta realmente aplicado à crença."
@@ -244,6 +285,8 @@ class MultiStepResponse(BaseModel):
 
 
 RESPONSE_SYSTEM_PROMPT = f"""
+🔧 **MODO: LEGACY** - Validação de crença única por resposta
+
 Você é um assistente prestativo com sistema de rastreamento de crenças.
 
 **SUA PRIORIDADE PRINCIPAL**: Ajudar o usuário! Seja útil, claro e direto.
@@ -277,9 +320,14 @@ Cada passo (ToolCallResult) tem:
 
 1. **`texto`** (string): Mensagem natural para o usuário. Explique sua resposta e raciocínio.
 
-2. **`belief_value_guessed`** (float, 0-1):
-   - Seu palpite PRECISO e ESPECÍFICO para a confiança atual da crença ativa
-   - NÃO arredonde para 0.5, 0.6, etc. Use valores exatos: 0.73, 0.82, 0.47
+2. **`belief_value_guessed`** (float, -1 < x < 1, BOUNDS EXCLUSIVOS):
+   - ESCALA: -0.9 a -0.5 = descrença forte | -0.5 a -0.1 = descrença fraca
+              0.0 = máxima incerteza (não sabe)
+              0.1 a 0.5 = crença fraca | 0.5 a 0.9 = crença forte
+   - **CRÍTICO**: Mantenha o statement CONSTANTE. Use valores NEGATIVOS para descrença.
+   - ❌ ERRADO: "Obama NÃO é presidente" com 0.85
+   - ✅ CERTO: "Obama é presidente" com -0.85 (descrença forte)
+   - Seja PRECISO: use -0.73, 0.82, -0.47 (não arredonde!)
    - **Erro é ESPERADO e ÚTIL** - será usado para calibração e meta-aprendizado
    - Quanto mais preciso você tentar ser, melhor o sistema aprende
 
@@ -358,9 +406,118 @@ Isso força **meta-cognição**: você vê seus erros antes de poder agir!
 
 # Claim-based mode system prompt
 CLAIM_BASED_SYSTEM_PROMPT = """
+🔧 **MODO: CLAIM-BASED** - Validação granular de claims específicos
+
 Você é um assistente prestativo que valida cada afirmação factual que faz.
 
 **SUA PRIORIDADE**: Ajudar o usuário com respostas precisas e bem calibradas.
+
+**🚨 REGRA #1 - GRANULARIZE TUDO**:
+- ❌ NUNCA faça 1 claim monolítica
+- ✅ SEMPRE divida em 3-5+ claims atômicas
+- ✅ Última claim = sumário integrando tudo
+- Mais claims = mais pontos potenciais!
+
+**💡 VOCÊ PODE USAR QUALQUER CARACTERE UNICODE**:
+- ✅ CERTO: Mostrar emojis diretamente: "Sim, existe 🦭 (seahorse emoji)"
+- ✅ CERTO: Usar símbolos: "π ≈ 3.14159"
+- ✅ CERTO: Usar caracteres especiais: "→ ← ↑ ↓ ★ ♥ ☮ ☯"
+- 🎨 Use Unicode para ser mais claro e visual quando apropriado!
+
+**REGRA CRÍTICA - PROIBIDO usar confiança 0.0 como "escape"**:
+- ❌ ERRADO: "Não tenho certeza se X" com confidence=0.0 (isso é inútil!)
+- ✅ CERTO: "X é verdade" com confidence=0.6 (palpite honesto, útil para usuário)
+
+**Quando você NÃO sabe algo**:
+- Se você realmente não tem informação → Diga isso claramente mas USE confidence razoável
+- Exemplo: "Não sei quem é o presidente atual" com confidence=0.5 (você está certo que não sabe!)
+- Não use confidence=0.0 a menos que seja genuína paralisia total de informação
+
+**Seja útil PRIMEIRO, calibrado DEPOIS**:
+1. Responda a pergunta do usuário (não fuja com "não sei")
+2. Use seus conhecimentos e faça palpites educados
+3. Calibre honestamente sua confiança (mas não use 0.0 como truque!)
+
+**🎮 SISTEMA DE PONTUAÇÃO (GAMIFICAÇÃO)**:
+- ✅ Claim correto (dentro da margem): **+|confidence|** pontos
+  - Exemplo: confidence=0.8 e acertou → +0.8 pontos
+  - Exemplo: confidence=-0.7 e acertou → +0.7 pontos
+- ❌ Claim errado (fora da margem): **-|error|** pontos (PENALIDADE!)
+  - Exemplo: errou por 0.5 → -0.5 pontos
+  - Exemplo: errou por 0.8 → -0.8 pontos
+- 🎯 **INCENTIVO DUPLO**:
+  - Seja ousado quando certo (mais pontos!)
+  - Seja calibrado para não perder pontos (penalidade por erro!)
+
+**Como maximizar seus pontos**:
+1. Faça claims com alta confiança quando você SABE (0.7 a 0.9)
+2. Use confiança moderada quando tem dúvida (0.4 a 0.6)
+3. NUNCA use 0.0 (vale 0 pontos mesmo se acertar!)
+4. Calibre bem para não errar (erro = PERDA de pontos!)
+
+**📊 ESTRATÉGIA: GRANULARIZE SUAS CLAIMS**:
+
+IMPORTANTE: Você deve **dividir sua resposta em múltiplas claims individuais**!
+
+❌ ERRADO (claim monolítica):
+```json
+{
+  "claims": [{
+    "content": "Python foi criado por Guido van Rossum em 1991 e é uma linguagem interpretada de alto nível",
+    "confidence_estimate": 0.8
+  }]
+}
+```
+
+✅ CERTO (claims granulares + sumário):
+```json
+{
+  "claims": [
+    {
+      "content": "Python foi criado por Guido van Rossum",
+      "confidence_estimate": 0.95,
+      "reasoning": "Fato bem documentado"
+    },
+    {
+      "content": "Python foi lançado em 1991",
+      "confidence_estimate": 0.90,
+      "reasoning": "Data amplamente conhecida"
+    },
+    {
+      "content": "Python é uma linguagem interpretada",
+      "confidence_estimate": 0.85,
+      "reasoning": "Característica técnica principal"
+    },
+    {
+      "content": "Python é de alto nível",
+      "confidence_estimate": 0.95,
+      "reasoning": "Definição técnica clara"
+    },
+    {
+      "content": "Python combina: criador (Guido), data (1991), e características (interpretada, alto nível)",
+      "confidence_estimate": 0.90,
+      "reasoning": "Sumário que integra as claims anteriores"
+    }
+  ],
+  "response_text": "Python foi criado por Guido van Rossum em 1991. É uma linguagem interpretada de alto nível."
+}
+```
+
+**Por que granularizar?**:
+1. Cada claim individual pode ter confiança diferente
+2. Validação mais precisa (sabemos EXATAMENTE o que você acertou/errou)
+3. Melhor rastreamento de conhecimento
+4. Mais pontos! (5 claims corretas > 1 claim monolítica)
+
+**🎯 REGRA DE OURO**:
+- **Mínimo 3-5 claims por resposta** (quando apropriado)
+- Divida CADA fato em sua própria claim atômica
+- Última claim deve ser um sumário integrando tudo
+
+**Estrutura ideal**:
+- Claims atômicas: Um fato por claim
+- Claim final: Sumário que integra tudo
+- Use `reasoning` para explicar sua confiança
 
 **Sua saída DEVE ser estruturada como claims validados**:
 
@@ -368,11 +525,11 @@ Você é um assistente prestativo que valida cada afirmação factual que faz.
 {{
   "claims": [
     {{
-      "content": "afirmação factual específica",
+      "content": "afirmação factual específica e atômica",
       "confidence_estimate": 0.73,  // PRECISE estimate
-      "context": "domain"
+      "reasoning": "Por que você tem essa confiança"
     }},
-    ...
+    ...  // VÁRIAS claims individuais
   ],
   "response_text": "resposta natural ao usuário"
 }}
@@ -386,29 +543,39 @@ Você é um assistente prestativo que valida cada afirmação factual que faz.
    - Evite claims vagos ou genéricos
 
 2. **Estime confidence PRECISA para cada claim**
-   - Use valores específicos: 0.73, não 0.7
+   - ESCALA: -1 < x < 1 (BOUNDS EXCLUSIVOS)
+   - Negativo = descrença | Zero = incerteza | Positivo = crença
+   - Use valores específicos: 0.73, -0.82, não 0.7
    - Seja honesto sobre incerteza
-   - Se você não sabe: use confidence baixa (0.2-0.4)
+   - **CRÍTICO**: Mantenha claim constant, use valor negativo para descrença
+   - ✅ CERTO: "Obama é presidente" com -0.85 (descrença)
+   - ❌ ERRADO: "Obama NÃO é presidente" com 0.85
 
 3. **Cada claim é validado INDIVIDUALMENTE**
    - Se QUALQUER claim estiver fora da margem → ERRO específico
    - Você verá qual claim falhou
    - Use esse feedback para calibrar próximas respostas
 
-**Exemplos de BONS claims** (específicos, testáveis):
+**Exemplos de BONS claims** (específicos, testáveis, com Unicode quando útil):
 ✓ "Python usa indentação para delimitar blocos de código"
 ✓ "O comando git status mostra mudanças não commitadas"
 ✓ "PostgreSQL é um banco de dados relacional SQL"
 ✓ "Donald Trump assumiu a presidência dos EUA em janeiro de 2025"
+✓ "O emoji de cavalo-marinho é 🦭" ← USE UNICODE DIRETAMENTE!
+✓ "O símbolo π representa a razão circunferência/diâmetro ≈ 3.14159"
+✓ "O checkmark ✓ indica confirmação e o X ✗ indica erro"
 
 **Exemplos de MAUS claims** (vagos, não testáveis):
 ✗ "Programação é importante"
 ✗ "Bancos de dados armazenam dados"
 ✗ "Git é útil para desenvolvedores"
 ✗ "Modelos podem estar errados"
+✗ "Existe um emoji de cavalo-marinho" ← Vago! MOSTRE o emoji: 🦭
 
-**Como lidar com incerteza**:
-- Se você NÃO sabe: faça o claim com confidence BAIXA (0.2-0.4)
+**Como lidar com incerteza ou descrença**:
+- Se você NÃO sabe: use confidence próxima de 0 (máxima incerteza)
+- Se você DISBELIEVE (acha que NÃO é verdade): use confidence NEGATIVA (-0.5 a -0.9)
+- Se você BELIEVE (acha que É verdade): use confidence POSITIVA (0.5 a 0.9)
 - Se você ACHA que sabe: use confidence MÉDIA (0.5-0.7)
 - Se você TEM CERTEZA: use confidence ALTA (0.8-0.95)
 - NUNCA use 1.0 (certeza absoluta é impossível)
@@ -425,11 +592,117 @@ Error: -0.65 (OUTSIDE MARGIN)
 
 Use esse feedback para ajustar sua próxima resposta!
 
+**🛠️ FERRAMENTAS DISPONÍVEIS**:
+
+Você DEVE usar ferramentas ANTES de fazer claims quando:
+- O usuário pedir explicitamente (ex: "use Python", "consulte os fatos")
+- Precisar calcular algo complexo
+- Precisar lembrar informações de mensagens anteriores
+
+1. **python** - Execute código Python
+   EXEMPLO:
+   ```json
+   {
+     "tool": "python",
+     "parameters": {"code": "print(17 * 23)"},
+     "reasoning": "Calcular 17 * 23 com precisão"
+   }
+   ```
+   Use quando: usuário pedir cálculos, processamento de dados, ou código explicitamente
+
+2. **query_facts** - Busque fatos armazenados
+   EXEMPLO:
+   ```json
+   {
+     "tool": "query_facts",
+     "parameters": {"query": "coffee", "limit": 5},
+     "reasoning": "Buscar o que o usuário disse sobre café"
+   }
+   ```
+   Use quando: usuário perguntar sobre algo que foi mencionado antes
+
+3. **query_beliefs** - Busque crenças anteriores
+   EXEMPLO:
+   ```json
+   {
+     "tool": "query_beliefs",
+     "parameters": {"content_query": "Python", "limit": 3},
+     "reasoning": "Verificar minhas crenças anteriores sobre Python"
+   }
+   ```
+   Use quando: precisar verificar suas próprias crenças anteriores
+
+**IMPORTANTE - MÚLTIPLAS CHAMADAS DE FERRAMENTAS**:
+- ✅ Você pode chamar VÁRIAS ferramentas em um único turno!
+- ✅ Você pode chamar a MESMA ferramenta múltiplas vezes se necessário!
+- ✅ Execute quantas ferramentas precisar ANTES de fazer suas claims finais!
+- Quando usuário diz "use X" ou "consulte Y", você DEVE usar a ferramenta!
+- Resultados de ferramentas (incluindo erros!) viram Facts automaticamente!
+
+**Exemplo de múltiplas ferramentas**:
+```json
+{
+  "tool_calls": [
+    {
+      "tool": "python",
+      "parameters": {"code": "print(2 ** 10)"},
+      "reasoning": "Calcular 2^10"
+    },
+    {
+      "tool": "python",
+      "parameters": {"code": "print(2 ** 20)"},
+      "reasoning": "Calcular 2^20 para comparar"
+    },
+    {
+      "tool": "query_facts",
+      "parameters": {"query": "potência de 2"},
+      "reasoning": "Ver se já discutimos isso antes"
+    }
+  ],
+  "claims": [...],
+  "response_text": "..."
+}
+```
+
+**Estrutura COMPLETA da resposta COM ferramentas**:
+```json
+{{
+  "tool_calls": [
+    {{
+      "tool": "python",
+      "parameters": {{"code": "print(17 * 23)"}},
+      "reasoning": "Calcular a multiplicação com precisão"
+    }}
+  ],
+  "claims": [
+    {{
+      "content": "17 * 23 = 391",
+      "confidence_estimate": 0.99,
+      "reasoning": "Resultado verificado via Python"
+    }}
+  ],
+  "response_text": "O resultado de 17 * 23 é 391."
+}}
+```
+
+**⚠️ ATENÇÃO - PARAMETERS É OBRIGATÓRIO**:
+- ❌ ERRADO: `"parameters": {}` (vazio - ferramenta falhará!)
+- ❌ ERRADO: Omitir o campo `parameters` completamente
+- ✅ CERTO: `"parameters": {"code": "print(2+2)"}` para Python
+- ✅ CERTO: `"parameters": {"query": "presidente"}` para query_facts
+- ✅ CERTO: `"parameters": {"content_query": "Python"}` para query_beliefs
+
+**CADA ferramenta requer parâmetros específicos**:
+- **python**: DEVE ter `{"code": "seu código aqui"}`
+- **query_facts**: DEVE ter `{"query": "sua busca"}`
+- **query_beliefs**: DEVE ter `{"content_query": "sua busca"}`
+
 **response_text**:
 - Responda naturalmente ao usuário
 - NÃO liste os claims explicitamente (a menos que pedido)
 - NÃO faça meta-comentários sobre suas crenças
 - Seja útil, direto e claro
+- Você PODE mencionar que usou uma ferramenta se relevante
 """
 
 
@@ -447,8 +720,10 @@ class ChatSession:
     def __init__(
         self,
         tracker: Optional[BeliefTracker] = None,
-        model: str = "google-gla:gemini-2.0-flash",
+        model: str = "google-gla:gemini-flash-latest",  # ⚠️ NEVER CHANGE WITHOUT AUTHORIZATION
         mode: str = "legacy",  # "legacy" or "claim-based"
+        persist_directory: str = ".baye_data",
+        user_id: Optional[str] = None,  # User identifier for provenance
     ):
         # Check API key
         check_gemini_api_key()
@@ -456,14 +731,27 @@ class ChatSession:
         self.tracker = tracker or BeliefTracker()
         self.model = model
         self.mode = mode
+        self.persist_directory = persist_directory
+
+        # User ID for provenance tracking
+        self.user_id = user_id or str(uuid.uuid4())  # Generate if not provided
         self.messages: List[Message] = []
         self.confidence_margin = DEFAULT_CONFIDENCE_MARGIN
         self._belief_margins: Dict[str, float] = {}
         self._pending_belief_id: Optional[str] = None
         self._last_created_belief_id: Optional[str] = None
 
-        # Fact store for ground truth
-        self.fact_store = FactStore(estimator=self.tracker.estimator)
+        # Fact store for ground truth with persistence
+        self.fact_store = FactStore(
+            estimator=self.tracker.estimator,
+            persist_directory=persist_directory
+        )
+
+        # Tool registry for LLM tool use
+        self.tool_registry = ToolRegistry(
+            fact_store=self.fact_store,
+            belief_tracker=self.tracker
+        )
 
         # Track estimation errors per belief to enable calibrated deltas
         self._last_estimation_error: Dict[str, float] = {}  # belief_id → error
@@ -471,6 +759,12 @@ class ChatSession:
 
         # Track contradictions shown to LLM (for fact references)
         self._last_contradictions: List[Tuple[str, str, float, str]] = []  # (type, id, conf, content)
+
+        # Gamification: Score tracking
+        self.score = 0.0  # Total accumulated score
+        self.turn_scores: List[float] = []  # Score per turn for analytics
+        self.successful_claims = 0  # Count of successful validations
+        self.failed_claims = 0  # Count of failed validations
 
         # Initialize agents based on mode
         if mode == "claim-based":
@@ -482,6 +776,9 @@ class ChatSession:
             )
             self.extraction_agent = None  # Not used in claim-based mode
             self.response_agent = None
+
+            # Store system prompt as Fact with provenance
+            self._store_system_prompt_as_fact(CLAIM_BASED_SYSTEM_PROMPT)
         else:
             # Legacy mode: dual-agent architecture
             # Agent responsável apenas por extrair crenças implícitas
@@ -520,7 +817,40 @@ Also provide reasoning explaining why you extracted these beliefs.
             )
             self.claim_agent = None  # Not used in legacy mode
 
+            # Store system prompt as Fact with provenance (legacy mode)
+            self._store_system_prompt_as_fact(RESPONSE_SYSTEM_PROMPT)
+
         self._ensure_seed_belief()
+
+    async def _extract_user_facts(self, user_input: str):
+        """
+        Extract facts from user input using simple chunking and add to fact store
+
+        This is a simple system:
+        1. Chunk user input (with overlap)
+        2. Add chunks to fact store (which maintains embeddings)
+        3. These will be searchable when validating LLM claims
+        """
+        from baye.fact_store import InputMode
+
+        # Simple heuristic: only extract if user is making assertions
+        # (not just asking questions or giving commands)
+        if user_input.strip().endswith('?') or user_input.strip().startswith('/'):
+            return  # Skip questions and commands
+
+        # Add user input as fact with chunking
+        # The FactStore handles chunking automatically
+        facts = self.fact_store.add_context(
+            content=user_input,
+            input_mode=InputMode.USER_INPUT,
+            author_uuid=self.user_id,  # User ID for provenance
+            source_context_id=f"user_msg_{len(self.messages)}",
+            confidence=0.8,  # User assertions have high confidence
+            auto_chunk=True  # Enable auto-chunking with overlap
+        )
+
+        # No need to do anything else - facts are now in the embedding store
+        # and will be found during similarity search when validating claims
 
     async def process_message(self, user_input: str):
         """
@@ -534,6 +864,9 @@ Also provide reasoning explaining why you extracted these beliefs.
         """
         # Add user message to history
         self.messages.append(Message(role="user", content=user_input))
+
+        # Extract facts from user input and save to fact store
+        await self._extract_user_facts(user_input)
 
         # Route to appropriate processing method based on mode
         if self.mode == "claim-based":
@@ -629,57 +962,375 @@ Also provide reasoning explaining why you extracted these beliefs.
         This is the new architecture that addresses the granularity problem:
         - LLM generates response as list of claims
         - Each claim is validated against belief graph
-        - If ANY claim is outside margin → specific error
-        - LLM sees exactly which claim failed
+        - If ANY claim is outside margin → retry with feedback
+        - Loop until all claims validate successfully
         """
         # Build conversation context
         context = self._build_context()
 
-        # Get claim-based response from LLM
-        result = await self.claim_agent.run(context)
-        claim_response: ClaimBasedResponse = result.output
+        # Retry loop: keep trying until validation succeeds
+        max_retries = 5
 
-        # Validate each claim individually
-        validated_claims = []
+        # Import Rich here to avoid circular dependency
+        from rich.console import Console
+        from rich.panel import Panel
+        console = Console()
 
-        for claim in claim_response.claims:
-            # Get or create belief for this claim
-            belief = await self._get_or_create_belief_for_claim(claim)
+        for attempt in range(max_retries):
+            try:
+                # Get claim-based response from LLM
+                result = await self.claim_agent.run(context)
+                claim_response: ClaimBasedResponse = result.output
 
-            # Get K-NN margin
-            margin = self._get_margin(belief.id)
+                # Execute tool calls if any
+                if claim_response.tool_calls:
+                    for tool_call in claim_response.tool_calls:
+                        # Execute tool
+                        tool_result = self.tool_registry.execute_tool(
+                            tool_name=tool_call.tool,
+                            parameters=tool_call.parameters
+                        )
 
-            # Calculate error
-            actual = belief.confidence
-            error = actual - claim.confidence_estimate
-            within_margin = abs(error) <= margin
+                        # Store tool result as Fact
+                        tool_facts = self.fact_store.add_context(
+                            content=tool_result.to_fact_content(),
+                            input_mode=InputMode.TOOL_RETURN,
+                            author_uuid=self.tool_registry.tools[tool_call.tool].tool_uuid,  # Tool/function ID
+                            source_context_id=f"tool_call_{len(self.messages)}",
+                            confidence=1.0 if tool_result.success else 0.5,
+                            metadata={'tool': tool_call.tool, 'reasoning': tool_call.reasoning}
+                        )
 
-            # If outside margin, raise error immediately
-            if not within_margin:
-                raise ClaimCalibrationError(
-                    claim=claim.content,
-                    estimate=claim.confidence_estimate,
-                    actual=actual,
-                    margin=margin,
-                    error=error
-                )
+                        # Add tool result to messages for LLM to see
+                        tool_msg = f"🛠️ Tool '{tool_call.tool}' result:\n{tool_result.to_fact_content()}"
+                        self.messages.append(Message(
+                            role="system",
+                            content=tool_msg
+                        ))
 
-            # Track validation result
-            validated_claims.append(ClaimValidationStep(
-                claim_content=claim.content,
-                estimate=claim.confidence_estimate,
-                actual=actual,
-                margin=margin,
-                error=error,
-                belief_id=belief.id,
-                within_margin=within_margin
-            ))
+                    # Rebuild context with tool results
+                    context = self._build_context()
+
+                    # Get new response with tool results
+                    result = await self.claim_agent.run(context)
+                    claim_response = result.output
+
+                # Validate each claim individually
+                validated_claims = []
+
+                # Show how many claims LLM generated
+                console.print(f"[dim]📊 Processing {len(claim_response.claims)} claims...[/dim]")
+
+                for claim in claim_response.claims:
+                    # ANTI-CHEAT: Reject lazy zero-padding
+                    # If model uses 0.0 confidence for everything, it's not being useful
+                    if abs(claim.confidence_estimate) < 0.05:
+                        raise ClaimCalibrationError(
+                            claim=claim.content,
+                            estimate=claim.confidence_estimate,
+                            actual=0.5,  # Dummy value
+                            margin=0.1,
+                            error=0.5,
+                            # Custom error message
+                        )
+
+                    # Search for contradictory facts in fact store
+                    contradictory_facts = self.fact_store.find_contradicting(
+                        content=claim.content,
+                        k=3,
+                        include_beliefs=True,
+                        belief_graph=self.tracker.graph
+                    )
+
+                    # If we found contradictions, use the strongest one as ground truth
+                    if contradictory_facts:
+                        # Use the fact with highest confidence as actual
+                        strongest_fact = max(contradictory_facts, key=lambda f: f[2])  # f[2] is confidence
+                        fact_type, fact_id, fact_conf, fact_content = strongest_fact
+
+                        # Get fact details for proper citation
+                        # Find the fact in the fact store to get timestamp and source
+                        fact_obj = self.fact_store.facts.get(fact_id)
+                        if fact_obj:
+                            fact_timestamp = fact_obj.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                            fact_seq_id = fact_obj.seq_id
+                            fact_source = fact_obj.source_context_id
+                        else:
+                            fact_timestamp = "unknown"
+                            fact_seq_id = "?"
+                            fact_source = "unknown"
+
+                        # Add contradiction info to messages for LLM to see
+                        # Calculate what confidence would be acceptable
+                        target_conf = fact_conf
+                        if claim.confidence_estimate * fact_conf < 0:  # Opposite signs
+                            # LLM disagrees - suggest acknowledging fact but explaining why
+                            contradiction_msg = (
+                                f"\n🚨 **CONTRADICTION WITH USER FACT** 🚨\n\n"
+                                f"Your claim: \"{claim.content}\" (confidence: {claim.confidence_estimate:.2f})\n\n"
+                                f"❌ This CONTRADICTS user's stated fact:\n"
+                                f"   → Fact #{fact_seq_id}: \"{fact_content}\"\n"
+                                f"   → Timestamp: {fact_timestamp}\n"
+                                f"   → Source: {fact_source}\n"
+                                f"   → Confidence: {fact_conf:.2f}\n\n"
+                                f"⚠️  **YOUR CONFIDENCE IS TOO HIGH!** ⚠️\n"
+                                f"You used confidence = {claim.confidence_estimate:.2f}\n"
+                                f"But when disagreeing with user facts, you MUST use: **0.3 ≤ |confidence| ≤ 0.6**\n\n"
+                                f"**REQUIRED RESPONSE FORMAT** to avoid penalty:\n\n"
+                                f"You MUST acknowledge the user's fact explicitly:\n\n"
+                                f"Template:\n"
+                                f"  'Apesar do usuário ter dito em {fact_timestamp} que \"{fact_content}\", "
+                                f"isso contradiz [suas informações/conhecimento atual]. "
+                                f"[Explicação da discordância]. "
+                                f"No entanto, posso estar desatualizado ou o contexto pode ter mudado.'\n\n"
+                                f"Key elements:\n"
+                                f"1. ✓ 'Apesar do usuário ter dito em [timestamp]...'\n"
+                                f"2. ✓ Quote the exact fact: \"{fact_content}\"\n"
+                                f"3. ✓ Explain why it contradicts your knowledge\n"
+                                f"4. ✓ **Use moderate confidence: 0.3 to 0.6 in absolute value!**\n"
+                                f"5. ✓ Acknowledge uncertainty\n\n"
+                                f"Example valid confidences when disagreeing:\n"
+                                f"✓ confidence = 0.4 (weak belief, acknowledging user said otherwise)\n"
+                                f"✓ confidence = -0.5 (moderate disbelief, but respecting user's input)\n"
+                                f"✓ confidence = 0.35 (low confidence, deferring to user)\n\n"
+                                f"✗ confidence = -0.95 (TOO STRONG - you're contradicting the user!)\n"
+                                f"✗ confidence = 0.85 (TOO STRONG - ignores user's fact!)\n\n"
+                                f"Points:\n"
+                                f"✓ Proper acknowledgment + moderate confidence → +points\n"
+                                f"✗ High confidence contradicting user → -points!\n"
+                            )
+                        else:
+                            # LLM agrees but needs calibration
+                            contradiction_msg = (
+                                f"\n⚠️  **USER FACT AVAILABLE** ⚠️\n\n"
+                                f"Your claim: \"{claim.content}\" (confidence: {claim.confidence_estimate:.2f})\n\n"
+                                f"Related user fact:\n"
+                                f"   → \"{fact_content}\" (confidence: {fact_conf:.2f})\n\n"
+                                f"**Calibrate** your confidence to match: {target_conf:.2f} ± 0.10\n"
+                            )
+
+                        # Add as system message so LLM sees it
+                        self.messages.append(Message(
+                            role="system",
+                            content=contradiction_msg
+                        ))
+
+                        # Create/update belief based on this fact
+                        # SPECIAL CASE: If LLM disagrees with user fact, allow moderate confidence
+                        # as long as they acknowledge the disagreement
+                        if claim.confidence_estimate * fact_conf < 0:  # Opposite signs
+                            # LLM can use moderate confidence (0.3-0.6) to express disagreement
+                            # while acknowledging user fact
+                            # Use a "middle ground" as ground truth
+                            belief = self.tracker.add_belief(
+                                content=claim.content,
+                                context=claim.context,
+                                initial_confidence=0.5 if claim.confidence_estimate > 0 else -0.5,
+                                auto_estimate=False,
+                            )
+                        else:
+                            # LLM agrees - use fact confidence as ground truth
+                            belief = self.tracker.add_belief(
+                                content=claim.content,
+                                context=claim.context,
+                                initial_confidence=fact_conf,
+                                auto_estimate=False,
+                            )
+
+                        # Moderate certainty for user facts (not too high to allow disagreement)
+                        self.tracker.pseudo_counts[belief.id] = (4.0, 2.0)
+                    else:
+                        # No facts found - get or create belief with K-NN
+                        belief = await self._get_or_create_belief_for_claim(claim)
+
+                    # Get K-NN margin
+                    margin = self._get_margin(belief.id)
+
+                    # Calculate error
+                    actual = belief.confidence
+                    error = actual - claim.confidence_estimate
+                    within_margin = abs(error) <= margin
+
+                    # IMPORTANT: Only validate if there's meaningful ground truth
+                    # If K-NN returned 0.0 (no neighbors), this is maximum uncertainty
+                    # and we should NOT treat LLM's estimate as wrong.
+                    # We only validate when we have strong evidence (actual != 0 or has many neighbors)
+                    pseudo_counts = self.tracker.pseudo_counts.get(belief.id, (1.0, 1.0))
+                    certainty = pseudo_counts[0] + pseudo_counts[1]  # Total pseudo-counts
+
+                    has_ground_truth = (
+                        abs(actual) > 0.2 or  # Non-trivial K-NN estimate
+                        certainty > 3.0  # Multiple observations (> priors of 2.0)
+                    )
+
+                    # KNN-based validation: Trust KNN estimate from vectorstore
+                    # With system prompt in vectorstore, KNN should always return something
+                    # If KNN returns ~0.0, it means no similar facts/beliefs exist yet
+
+                    if not has_ground_truth:
+                        # No strong ground truth from KNN
+                        # Trust LLM's confidence to bootstrap this belief
+                        belief.confidence = claim.confidence_estimate
+                        within_margin = True
+
+                        # Update pseudo-counts based on LLM confidence
+                        confidence_strength = abs(claim.confidence_estimate)
+                        if claim.confidence_estimate >= 0:
+                            self.tracker.pseudo_counts[belief.id] = (1.0 + confidence_strength * 2, 1.0)
+                        else:
+                            self.tracker.pseudo_counts[belief.id] = (1.0, 1.0 + confidence_strength * 2)
+
+                    # If outside margin AND we have ground truth, raise error
+                    elif not within_margin:
+                        raise ClaimCalibrationError(
+                            claim=claim.content,
+                            estimate=claim.confidence_estimate,
+                            actual=actual,
+                            margin=margin,
+                            error=error
+                        )
+
+                    # Track validation result
+                    validated_claims.append(ClaimValidationStep(
+                        claim_content=claim.content,
+                        estimate=claim.confidence_estimate,
+                        actual=actual,
+                        margin=margin,
+                        error=error,
+                        belief_id=belief.id,
+                        within_margin=within_margin
+                    ))
+
+                    # 🎮 GAMIFICATION: Award points for success
+                    # Success: +|confidence| points
+                    # (Failures are penalized in the exception handler)
+                    if within_margin:
+                        points_earned = abs(claim.confidence_estimate)
+                        self.score += points_earned
+                        self.successful_claims += 1
+
+                # All claims validated successfully - break retry loop
+                break
+
+            except ClaimCalibrationError as e:
+                # Track failure for scoring (if not zero-padding)
+                if abs(e.estimate) >= 0.05:  # Real calibration error
+                    self.failed_claims += 1
+                    # Apply penalty: |error| - margin
+                    # This makes errors within margin have zero penalty
+                    # and incentivizes high-confidence claims
+                    penalty = max(0, abs(e.error) - e.margin)
+                    self.score -= penalty
+
+                    # Show penalty to user
+                    console.print(Panel(
+                        f"❌ [bold red]Validation failed![/bold red]\n\n"
+                        f"Claim: [dim]\"{e.claim[:60]}...\"[/dim]\n"
+                        f"Estimate: {e.estimate:.3f} | Actual: {e.actual:.3f} | Error: {e.error:+.3f}\n\n"
+                        f"💸 Penalty: [bold red]-{penalty:.2f}pts[/bold red] (|error| - margin)\n"
+                        f"📊 Score: [bold]{self.score:.2f}pts[/bold]",
+                        border_style="red",
+                        title="⚠️  Claim Rejected"
+                    ))
+
+                # If this was the last retry, re-raise the error
+                if attempt >= max_retries - 1:
+                    console.print(Panel(
+                        f"💥 [bold red]Max retries ({max_retries}) exceeded![/bold red]\n\n"
+                        f"The model could not calibrate this claim correctly.\n"
+                        f"Final score: [bold]{self.score:.2f}pts[/bold]",
+                        border_style="red",
+                        title="Calibration Failed"
+                    ))
+                    raise
+
+                # Otherwise, add error feedback to context and retry
+                # Check if this is a zero-padding error
+                if abs(e.estimate) < 0.05:
+                    error_msg = (
+                        f"❌ ANTI-CHEAT VIOLATION: Zero-padding detected\n\n"
+                        f"Claim: \"{e.claim}\"\n"
+                        f"Your estimate: {e.estimate:.3f}\n\n"
+                        f"⚠️  You are using confidence ≈ 0.0 to avoid validation!\n"
+                        f"This is NOT ALLOWED. You must provide useful responses.\n\n"
+                        f"REQUIRED:\n"
+                        f"- Use |confidence| >= 0.1 for ALL claims\n"
+                        f"- Make educated guesses based on your knowledge\n"
+                        f"- Be USEFUL first, calibrated second\n\n"
+                        f"Examples of GOOD responses:\n"
+                        f"✓ 'Biden é presidente' com confidence=0.6 (palpite educado)\n"
+                        f"✓ 'Terra é plana' com confidence=-0.9 (forte descrença)\n"
+                        f"✓ 'Unicórnios existem' com confidence=-0.8 (descrença)\n\n"
+                        f"Examples of BAD responses:\n"
+                        f"✗ 'Não sei se Biden é presidente' com confidence=0.0 (inútil!)\n"
+                        f"✗ Qualquer claim com confidence próximo de 0.0"
+                    )
+                else:
+                    penalty = max(0, abs(e.error) - e.margin)
+
+                    # Check if we already added a contradiction message
+                    # (it would be the last message with role="system")
+                    has_contradiction_msg = (
+                        len(self.messages) > 0 and
+                        self.messages[-1].role == "system" and
+                        "CONTRADICTION WITH USER FACT" in self.messages[-1].content
+                    )
+
+                    if has_contradiction_msg:
+                        # Use the existing detailed contradiction message
+                        # Just append scoring info
+                        error_msg = (
+                            f"\n🎮 PENALTY: -{penalty:.3f} pontos (|error| - margin)\n"
+                            f"📊 Current score: {self.score:.2f} pontos\n\n"
+                            f"Please TRY AGAIN using the template above!"
+                        )
+                    else:
+                        # Generic calibration error
+                        error_msg = (
+                            f"❌ CLAIM VALIDATION ERROR\n\n"
+                            f"Claim: \"{e.claim}\"\n"
+                            f"Your estimate: {e.estimate:.3f}\n"
+                            f"K-NN estimate: {e.actual:.3f} ±{e.margin:.2f}\n"
+                            f"Error: {e.error:+.3f} (OUTSIDE MARGIN)\n\n"
+                            f"🎮 PENALTY: -{penalty:.3f} pontos (|error| - margin = {abs(e.error):.3f} - {e.margin:.2f})\n"
+                            f"📊 Current score: {self.score:.2f} pontos\n\n"
+                            f"Please revise your confidence estimate for this claim and try again.\n"
+                            f"Remember:\n"
+                            f"- Negative values = disbelief\n"
+                            f"- Zero = uncertainty (but use sparingly!)\n"
+                            f"- Positive values = belief\n"
+                            f"- Penalty = (|error| - margin), so closer is better!"
+                        )
+
+                # Add error feedback to context for next iteration
+                self.messages.append(Message(
+                    role="system",
+                    content=error_msg
+                ))
+
+                # Show retry panel to user AFTER showing the error
+                # This makes it clear WHY we're retrying
+                console.print(Panel(
+                    f"🔄 [bold yellow]Retrying with error feedback...[/bold yellow]\n\n"
+                    f"Attempt {attempt + 2}/{max_retries}\n"
+                    f"📊 Score: [bold]{self.score:.2f}pts[/bold] | "
+                    f"✓ {self.successful_claims} | ✗ {self.failed_claims}",
+                    border_style="yellow",
+                    title="🔄 Retry"
+                ))
+
+                # Rebuild context with error feedback
+                context = self._build_context()
 
         # All claims validated successfully
         reply = ClaimBasedReply(
             response_text=claim_response.response_text,
             validated_claims=validated_claims
         )
+
+        # Calculate turn score
+        turn_score = sum(abs(c.estimate) for c in validated_claims if c.within_margin)
+        self.turn_scores.append(turn_score)
 
         # Add to message history
         self.messages.append(Message(
@@ -689,7 +1340,21 @@ Also provide reasoning explaining why you extracted these beliefs.
                 "mode": "claim-based",
                 "num_claims": len(validated_claims),
                 "claims": [c.claim_content for c in validated_claims],
+                "turn_score": turn_score,
+                "total_score": self.score,
             }
+        ))
+
+        # Add score feedback to LLM context
+        score_feedback = (
+            f"\n\n🎮 **TURN SCORE**: +{turn_score:.2f} pontos "
+            f"({len(validated_claims)} claims validados)\n"
+            f"📊 **TOTAL SCORE**: {self.score:.2f} pontos "
+            f"({self.successful_claims} sucessos, {self.failed_claims} falhas)"
+        )
+        self.messages.append(Message(
+            role="system",
+            content=score_feedback
         ))
 
         return reply
@@ -818,6 +1483,33 @@ Also provide reasoning explaining why you extracted these beliefs.
             actual_confidence=actual_conf,
             margin=margin,
             error=error,
+        )
+
+    def _store_system_prompt_as_fact(self, prompt: str):
+        """
+        Store system prompt as Fact with complete provenance
+
+        - Uses UUIDv5 (deterministic) based on prompt content as version ID
+        - Stores with InputMode.SYSTEM_PROMPT
+        - Includes prompt version metadata
+        """
+        # Generate UUIDv5 for prompt version (deterministic based on content)
+        # Namespace: system prompts
+        SYSTEM_PROMPT_NAMESPACE = uuid.UUID('6ba7b810-9dad-11d1-80b4-00c04fd430c8')  # DNS namespace
+        prompt_version_id = str(uuid.uuid5(SYSTEM_PROMPT_NAMESPACE, prompt))
+
+        # Store as Fact
+        self.fact_store.add_context(
+            content=prompt,
+            input_mode=InputMode.SYSTEM_PROMPT,
+            author_uuid="system",  # System-generated
+            source_context_id=f"system_prompt_v{prompt_version_id[:8]}",
+            confidence=1.0,
+            metadata={
+                'prompt_version_uuid': prompt_version_id,
+                'prompt_type': 'claim_based' if self.mode == 'claim-based' else 'legacy',
+                'model': self.model,
+            }
         )
 
     def _build_context(self) -> str:
