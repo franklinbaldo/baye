@@ -155,6 +155,26 @@ Sua saída DEVE ser um objeto JSON estruturado com os seguintes campos:
 - Erro médio de 0.15 é esperado - isso é NORMAL e BOM!
 - O sistema usa seus erros para aprender padrões de calibração
 
+**REGRAS DE CALIBRAÇÃO FORÇADA** (CRÍTICO):
+
+1. **Primeira tentativa**: Sempre use `delta=0` quando fazer uma estimativa
+   - Você PRECISA ver o erro primeiro
+   - Se seu palpite estiver fora da margem, você receberá feedback de erro
+
+2. **Após ver erro**: Na PRÓXIMA resposta você pode usar `delta != 0`
+   - Agora você sabe: "Eu chutei X, era Y"
+   - Use esse conhecimento para justificar o ajuste
+   - DEVE fornecer justificativas explicando por que está ajustando
+
+3. **Ciclo**:
+   ```
+   Turno N: Chute (delta=0) → Erro mostrado
+   Turno N+1: Ajuste (delta!=0) + Justificativas → Reset
+   Turno N+2: Novo chute (delta=0) → ...
+   ```
+
+Isso força **meta-cognição**: você vê seus erros antes de poder agir!
+
 **Margem padrão**: ±{DEFAULT_CONFIDENCE_MARGIN:.2f}
 """
 
@@ -185,6 +205,10 @@ class ChatSession:
         self._belief_margins: Dict[str, float] = {}
         self._pending_belief_id: Optional[str] = None
         self._last_created_belief_id: Optional[str] = None
+
+        # Track estimation errors per belief to enable calibrated deltas
+        self._last_estimation_error: Dict[str, float] = {}  # belief_id → error
+        self._can_use_delta: Dict[str, bool] = {}  # belief_id → can adjust?
 
         # Agent responsável apenas por extrair crenças implícitas
         self.extraction_agent = Agent(
@@ -285,20 +309,52 @@ Also provide reasoning explaining why you extracted these beliefs.
         result = await self.response_agent.run(response_context)
         llm_output: ToolCallResult = result.output
 
-        # Validate justifications requirement
-        if abs(llm_output.delta) > 0 and not llm_output.justifications:
-            raise ValueError(
-                f"Delta is {llm_output.delta} but no justifications provided. "
-                "Justifications are REQUIRED when delta != 0."
-            )
-
-        # Validate LLM's guess and apply delta
+        # Validate LLM's guess and calculate error
         belief = self.tracker.graph.beliefs[active_belief.id]
         margin = self._get_margin(active_belief.id)
         actual_conf = belief.confidence
-        diff = abs(actual_conf - llm_output.belief_value_guessed)
+        error = actual_conf - llm_output.belief_value_guessed
+        abs_error = abs(error)
 
-        # Apply delta if provided
+        # Check if guess is outside margin
+        outside_margin = abs_error > margin
+
+        # RULE 1: If outside margin, MUST use delta=0 (force calibration first)
+        if outside_margin and abs(llm_output.delta) > 0:
+            # This is an error - LLM tried to adjust before seeing the error
+            error_msg = (
+                f"❌ ERRO DE ESTIMAÇÃO:\n"
+                f"Seu palpite: {llm_output.belief_value_guessed:.3f}\n"
+                f"Valor real: {actual_conf:.3f}\n"
+                f"Erro: {error:+.3f} (margem: ±{margin:.2f})\n\n"
+                f"Você NÃO PODE usar delta != 0 na primeira tentativa quando erra a estimativa.\n"
+                f"Use delta=0 AGORA. Na PRÓXIMA resposta você poderá ajustar com justificativas.\n\n"
+                f"Isso força você a:\n"
+                f"1. Ver seu erro de calibração\n"
+                f"2. Pensar sobre POR QUE errou\n"
+                f"3. Ajustar COM JUSTIFICATIVAS baseadas nesse aprendizado"
+            )
+            raise ValueError(error_msg)
+
+        # RULE 2: Can only use delta != 0 AFTER seeing an estimation error
+        can_adjust = self._can_use_delta.get(active_belief.id, False)
+
+        if abs(llm_output.delta) > 0 and not can_adjust:
+            raise ValueError(
+                f"Você não pode usar delta != 0 ainda!\n"
+                f"Primeiro você precisa fazer uma estimativa e VER o erro.\n"
+                f"Use delta=0 neste turno."
+            )
+
+        # RULE 3: If using delta, MUST provide justifications
+        if abs(llm_output.delta) > 0 and not llm_output.justifications:
+            raise ValueError(
+                f"Delta é {llm_output.delta} mas nenhuma justificativa foi fornecida.\n"
+                f"Justificativas são OBRIGATÓRIAS quando delta != 0.\n"
+                f"Explique por que você está fazendo este ajuste!"
+            )
+
+        # Apply delta if provided and allowed
         applied_delta = 0.0
         justification_ids = []
 
@@ -317,12 +373,20 @@ Also provide reasoning explaining why you extracted these beliefs.
                     "source": "llm_structured_output",
                     "texto": llm_output.texto,
                     "guess": llm_output.belief_value_guessed,
-                    "error": diff,
+                    "error": error,
                     "justification_ids": justification_ids,
                 },
             )
             applied_delta = update.new_confidence - update.old_confidence
             actual_conf = update.new_confidence
+
+            # Reset: after using delta, need to see error again
+            self._can_use_delta[active_belief.id] = False
+
+        # Update state: if outside margin, enable delta for next turn
+        if outside_margin:
+            self._last_estimation_error[active_belief.id] = error
+            self._can_use_delta[active_belief.id] = True
 
         # Build final payload with actual values filled in
         payload = ToolCallResult(

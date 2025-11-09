@@ -335,8 +335,22 @@ Type a message to start!
                 self.console.print("\n[yellow]Use /quit to exit[/yellow]")
                 continue
 
+            except ValueError as e:
+                # These are expected errors (estimation errors, missing justifications)
+                # Show them nicely to the user
+                error_msg = str(e)
+                if "ERRO DE ESTIMAÇÃO" in error_msg or "delta" in error_msg.lower():
+                    self.console.print(Panel(
+                        error_msg,
+                        title="⚠️  Erro de Calibração",
+                        border_style="yellow",
+                        style="yellow"
+                    ))
+                else:
+                    self.console.print(f"[red]Error: {e}[/red]")
+
             except Exception as e:
-                self.console.print(f"[red]Error: {e}[/red]")
+                self.console.print(f"[red]Unexpected Error: {e}[/red]")
                 import traceback
                 self.console.print(f"[dim]{traceback.format_exc()}[/dim]")
 
