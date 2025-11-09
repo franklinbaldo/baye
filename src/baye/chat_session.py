@@ -19,6 +19,7 @@ warnings.filterwarnings('ignore', category=UserWarning, module='pydantic_ai')
 from .belief_tracker import BeliefTracker, BeliefUpdate
 from .belief_types import Belief
 from .llm_agents import detect_relationship, check_gemini_api_key
+from .fact_store import FactStore, Fact
 
 
 @dataclass
@@ -171,6 +172,11 @@ class ClaimCalibrationError(ValueError):
 # LEGACY MODE - Original tool-based architecture
 # ============================================================================
 
+class FactReference(BaseModel):
+    """Reference to a fact by UUID"""
+    fact_id: str = Field(..., description="UUID of the fact being referenced")
+
+
 class JustificationBelief(BaseModel):
     """A belief that justifies a confidence change"""
     content: str = Field(..., description="The justification statement")
@@ -178,6 +184,23 @@ class JustificationBelief(BaseModel):
     confidence_estimate: float = Field(..., ge=0.0, le=1.0, description="Confidence in this justification")
     # Note: Removed sub_justifications to avoid recursive $ref (Gemini limitation)
     # Justifications are kept flat - deeper chains built via graph traversal
+
+
+class Justification(BaseModel):
+    """
+    Justification can be either a new belief OR a reference to an existing fact
+
+    Use fact_reference when citing a known fact (after seeing contradictions).
+    Use belief when creating a new justification.
+    """
+    fact_reference: Optional[FactReference] = Field(
+        None,
+        description="Reference to an existing fact UUID (use this when citing facts shown in error)"
+    )
+    belief: Optional[JustificationBelief] = Field(
+        None,
+        description="New belief to create as justification"
+    )
 
 
 class ToolCallResult(BaseModel):
@@ -191,9 +214,9 @@ class ToolCallResult(BaseModel):
         0.0, ge=-1.0, le=1.0,
         description="Ajuste solicitado para a crença (0 mantém o valor atual)."
     )
-    justifications: List[JustificationBelief] = Field(
+    justifications: List[Justification] = Field(
         default_factory=list,
-        description="OBRIGATÓRIO quando delta != 0: Lista de crenças que justificam este ajuste. Mínimo 1 justificativa."
+        description="OBRIGATÓRIO quando delta != 0: Lista de justificativas (facts OU beliefs). Mínimo 1. Use fact_reference para citar fatos mostrados em erros."
     )
     belief_id: str = Field(..., description="ID interno da crença manipulada.")
     actual_confidence: float = Field(
@@ -265,36 +288,41 @@ Cada passo (ToolCallResult) tem:
    - Positivo aumenta, negativo reduz
 
 4. **`justifications`** (lista de objetos): **OBRIGATÓRIO quando delta != 0**
-   - Cada justificativa é uma crença que SUPORTA esta mudança
+   - Pode ser **fact_reference** (citar fato conhecido) OU **belief** (criar nova crença)
    - Mínimo 1 justificativa se delta != 0
-   - Cada justificativa tem:
-     * `content`: Afirmação que justifica o delta
-     * `context`: Domínio (e.g., "evidence", "observation", "inference")
-     * `confidence_estimate`: Confiança nesta justificativa (0-1)
 
-   Exemplo:
+   **Citando um Fact** (quando erro mostra contradições):
    ```json
    {{
      "delta": 0.2,
      "justifications": [
        {{
-         "content": "Stripe API retornou 504 timeout às 14:32 UTC",
-         "context": "observation",
-         "confidence_estimate": 0.95
-       }},
-       {{
-         "content": "Latência de rede está variando entre 200-500ms",
-         "context": "measurement",
-         "confidence_estimate": 0.85
-       }},
-       {{
-         "content": "Logs mostram 3 timeouts nas últimas 24h",
-         "context": "evidence",
-         "confidence_estimate": 1.0
+         "fact_reference": {{
+           "fact_id": "abc12345-6789-..."  // UUID mostrado no erro
+         }}
        }}
      ]
    }}
    ```
+
+   **Criando nova Belief**:
+   ```json
+   {{
+     "delta": 0.2,
+     "justifications": [
+       {{
+         "belief": {{
+           "content": "Stripe API retornou 504 timeout às 14:32 UTC",
+           "context": "observation",
+           "confidence_estimate": 0.95
+         }}
+       }}
+     ]
+   }}
+   ```
+
+   **IMPORTANTE**: Se o erro mostrou **Facts contraditórios**, você DEVE usar
+   `fact_reference` para citar esses facts ao invés de criar beliefs redundantes!
 
    **Nota**: Mantenha justificativas específicas e atômicas. Chains mais profundas
    são construídas automaticamente via grafo quando justificativas referenciam outras.
@@ -434,9 +462,15 @@ class ChatSession:
         self._pending_belief_id: Optional[str] = None
         self._last_created_belief_id: Optional[str] = None
 
+        # Fact store for ground truth
+        self.fact_store = FactStore(estimator=self.tracker.estimator)
+
         # Track estimation errors per belief to enable calibrated deltas
         self._last_estimation_error: Dict[str, float] = {}  # belief_id → error
         self._can_use_delta: Dict[str, bool] = {}  # belief_id → can adjust?
+
+        # Track contradictions shown to LLM (for fact references)
+        self._last_contradictions: List[Tuple[str, str, float, str]] = []  # (type, id, conf, content)
 
         # Initialize agents based on mode
         if mode == "claim-based":
