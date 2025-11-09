@@ -57,18 +57,23 @@ class Belief:
 
     def __post_init__(self):
         """Validate confidence range."""
-        if not -1.0 <= self.confidence <= 1.0:
-            raise ValueError(f"Confidence must be in [-1, 1], got {self.confidence}")
+        if not -1.0 < self.confidence < 1.0:
+            raise ValueError(f"Confidence must be in (-1, 1) exclusive, got {self.confidence}")
 
-    def update_confidence(self, delta: Delta) -> None:
+    def update_confidence(self, delta: Delta) -> Delta:
         """
         Update confidence by delta, clamping to [-1, 1].
 
         Args:
             delta: Change in confidence
+
+        Returns:
+            Actual delta applied (may differ from requested due to clamping)
         """
+        old_conf = self.confidence
         self.confidence = max(-1.0, min(1.0, self.confidence + delta))
         self.updated_at = datetime.now()
+        return self.confidence - old_conf
 
     def add_supporter(self, belief_id: BeliefID) -> None:
         """Add a belief that supports this one."""

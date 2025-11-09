@@ -33,6 +33,16 @@ from .llm_agents import (
     check_gemini_api_key,
 )
 
+# Belief tracking and chat
+from .belief_tracker import BeliefTracker, BeliefUpdate, TrainingSignal
+from .chat_session import (
+    ChatSession,
+    Message,
+    AssistantReply,
+    ClaimBasedReply,
+    ClaimCalibrationError,
+)
+
 __all__ = [
     # Version
     "__version__",
@@ -47,6 +57,15 @@ __all__ = [
     # Core classes
     "JustificationGraph",
     "SemanticEstimator",
+    "BeliefTracker",
+    "ChatSession",
+    # Data classes
+    "BeliefUpdate",
+    "TrainingSignal",
+    "Message",
+    "AssistantReply",
+    "ClaimBasedReply",
+    "ClaimCalibrationError",
     # LLM models
     "RelationshipAnalysis",
     "ConflictResolution",

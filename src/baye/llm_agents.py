@@ -44,10 +44,16 @@ class EmbeddingResult(BaseModel):
 # Relationship Detection Agent
 # ============================================================================
 
-relationship_agent = Agent(
-    'google-gla:gemini-2.0-flash',
-    output_type=RelationshipAnalysis,
-    system_prompt="""You are an expert at analyzing logical relationships between beliefs.
+_relationship_agent = None
+
+def _get_relationship_agent():
+    """Lazy-load relationship agent"""
+    global _relationship_agent
+    if _relationship_agent is None:
+        _relationship_agent = Agent(
+            'google-gla:gemini-2.0-flash',
+            output_type=RelationshipAnalysis,
+            system_prompt="""You are an expert at analyzing logical relationships between beliefs.
 
 Given two beliefs, determine if they:
 - SUPPORT: One provides evidence or justification for the other
@@ -62,7 +68,8 @@ Focus on semantic meaning, not just keyword overlap. Consider:
 
 Be conservative: only mark as SUPPORT or CONTRADICT if the relationship is clear.
 """,
-)
+        )
+    return _relationship_agent
 
 
 async def detect_relationship(
@@ -100,7 +107,8 @@ Belief 2:
 What is the logical relationship between them?
 """
 
-    result = await relationship_agent.run(prompt)
+    agent = _get_relationship_agent()
+    result = await agent.run(prompt)
     return result.output
 
 
@@ -108,10 +116,16 @@ What is the logical relationship between them?
 # Conflict Resolution Agent
 # ============================================================================
 
-conflict_agent = Agent(
-    'google-gla:gemini-2.0-flash',
-    output_type=ConflictResolution,
-    system_prompt="""You are an expert at resolving contradictions between beliefs.
+_conflict_agent = None
+
+def _get_conflict_agent():
+    """Lazy-load conflict agent"""
+    global _conflict_agent
+    if _conflict_agent is None:
+        _conflict_agent = Agent(
+            'google-gla:gemini-2.0-flash',
+            output_type=ConflictResolution,
+            system_prompt="""You are an expert at resolving contradictions between beliefs.
 
 When given contradicting beliefs, create a nuanced belief that:
 1. Acknowledges valid aspects of both
@@ -128,7 +142,8 @@ Example:
   Belief 2: "Payment APIs have unexpected downtime"
   Resolution: "Third-party services are generally reliable, but critical paths (like payments) need defensive programming"
 """,
-)
+        )
+    return _conflict_agent
 
 
 async def resolve_conflict(
@@ -173,7 +188,8 @@ Belief 2:
 
     prompt += "\nGenerate a nuanced belief that reconciles these contradictions."
 
-    result = await conflict_agent.run(prompt)
+    agent = _get_conflict_agent()
+    result = await agent.run(prompt)
     return result.output
 
 
@@ -181,10 +197,16 @@ Belief 2:
 # Semantic Embedding Agent
 # ============================================================================
 
-embedding_agent = Agent(
-    'google-gla:gemini-2.0-flash',
-    output_type=EmbeddingResult,
-    system_prompt="""You generate semantic embeddings for text.
+_embedding_agent = None
+
+def _get_embedding_agent():
+    """Lazy-load embedding agent"""
+    global _embedding_agent
+    if _embedding_agent is None:
+        _embedding_agent = Agent(
+            'google-gla:gemini-2.0-flash',
+            output_type=EmbeddingResult,
+            system_prompt="""You generate semantic embeddings for text.
 
 Convert the belief into a dense vector representation that captures:
 - Core semantic meaning
@@ -193,7 +215,8 @@ Convert the belief into a dense vector representation that captures:
 
 Use a consistent dimensionality across all embeddings.
 """,
-)
+        )
+    return _embedding_agent
 
 
 async def generate_embedding(belief: Belief) -> List[float]:
@@ -218,7 +241,8 @@ Context: {belief.context}
 Return a dense vector representation.
 """
 
-    result = await embedding_agent.run(prompt)
+    agent = _get_embedding_agent()
+    result = await agent.run(prompt)
     return result.output.embedding
 
 
