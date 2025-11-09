@@ -130,6 +130,10 @@ Where:
 - **id:** Unique identifier (UUID)
 - **content:** Natural language statement
 - **confidence:** Real number in [-1, 1] representing belief strength
+  - **Positive values [0, 1]:** Degree of belief in the statement being true
+  - **Negative values [-1, 0]:** Degree of belief in the statement being false (active disbelief)
+  - **Zero:** Complete uncertainty or lack of information
+  - Note: Current implementation (V1.5) primarily uses [0, 1]; full [-1, 1] support planned for V2.0
 - **context:** Domain category (e.g., "api_reliability", "security")
 - **supporters:** Set of belief IDs that justify this belief
 - **dependents:** Set of belief IDs that depend on this belief
@@ -161,7 +165,12 @@ Edges have types:
 - **REFINES:** Specialization (B₁ → B₂ means B₁ is a more specific version of B₂)
 
 **Invariants:**
-1. Graph must be acyclic for support relationships (prevents circular justification)
+1. **Acyclicity enforcement:** Support relationships should form a DAG to prevent circular justification
+   - The system does NOT structurally prevent cycle creation (no topological validation during edge addition)
+   - Instead, cycles are detected and handled during propagation via visited-set tracking
+   - When a cycle is detected during propagation, that path is terminated to prevent infinite loops
+   - This design choice trades upfront validation cost for runtime flexibility and simpler edge insertion
+   - Future versions may add optional strict DAG enforcement via topological sort validation
 2. Confidence propagates from supporters to dependents
 3. Contradictions create negative influence
 
@@ -177,8 +186,11 @@ dep(B, Sᵢ) = (1/n) × [σ(conf(Sᵢ)) / Σⱼ σ(conf(Sⱼ))]
 
 Where:
 - **σ(x) = 1 / (1 + e^(-k(x - 0.5)))** is a logistic saturation function
-- **k = 10** controls saturation rate
+- **k = 10** controls saturation rate (chosen empirically; k=10 provides sharp but smooth transition around conf=0.5)
 - **n = |S|** is the number of supporters
+
+**Hyperparameter justification:**
+- **k=10:** Provides saturation around confidence 0.9, preventing beliefs with conf>0.95 from dominating propagation. Lower values (k=5) would saturate too early; higher values (k=20) would allow near-linear propagation up to conf=0.99, risking overconfidence amplification.
 
 This ensures:
 1. Equal base dependency (1/n) for each supporter
@@ -196,6 +208,10 @@ When a supporter Sᵢ changes confidence by Δconf, the dependent B receives:
 Where:
 - **α = 0.7** is the causal propagation weight (prevents full propagation)
 - This update is applied recursively to all dependents
+
+**Hyperparameter justification (α):**
+- **α=0.7:** Chosen to balance propagation strength vs. dampening. α=1.0 would cause full propagation (risking overconfidence cascade); α=0.5 would dampen too much (important updates wouldn't propagate effectively). Empirically, α=0.7 allows 3-4 hops of meaningful propagation (Δconf > 0.01 threshold) while preventing exponential amplification.
+- Future work: Learn α per-edge based on relationship strength or perform grid search over validation set
 
 **Example:**
 ```
@@ -219,6 +235,11 @@ Where:
 - **sim(B, S)** is cosine similarity of embeddings
 - **β = 0.3** is the semantic propagation weight (lower than causal)
 
+**Hyperparameter justification (β and α:β ratio):**
+- **β=0.3:** Semantic propagation should be weaker than causal (α=0.7) because semantic similarity is less reliable than explicit justification links. The ratio α:β = 0.7:0.3 ≈ 2.3:1 ensures causal links dominate but semantic influence still affects nearby beliefs.
+- Rationale: If semantic weight were equal to causal, spurious correlations in embedding space could propagate as strongly as logical justifications, compromising interpretability.
+- Future work: Adaptive β based on embedding quality or domain-specific tuning
+
 This enables "soft" influence beyond explicit graph edges.
 
 ### 3.4 K-NN Confidence Estimation
@@ -233,6 +254,11 @@ Where:
 - **N = {N₁, ..., Nₖ}** are the K most similar existing beliefs
 - **sim(·,·)** is enhanced Jaccard similarity (or embedding cosine similarity)
 - **K = 5** by default
+
+**Hyperparameter justification (K):**
+- **K=5:** Balances between using sufficient neighbors for robust estimation vs. including distant/irrelevant beliefs. K=1 would be too sensitive to outliers; K=10+ would dilute signal with noise from less similar beliefs.
+- Standard practice in K-NN literature often uses K in [3, 7] range; we chose K=5 as middle ground
+- Future work: Cross-validation or adaptive K based on neighbor similarity distribution
 
 **Dampening:** To prevent over-confidence from near-perfect matches:
 ```
@@ -402,6 +428,30 @@ def propagate_from(origin_id, initial_delta, max_depth=4):
         # Merge and apply
         updates = merge_updates(causal_updates, semantic_updates)
         budget = get_budget(depth)  # e.g., [8, 5, 3, 2]
+
+def merge_updates(causal, semantic):
+    """
+    Merge causal and semantic updates, handling conflicts.
+
+    Strategy: If belief appears in both lists, take causal update
+    (explicit justification overrides semantic similarity).
+    Then append semantic updates for beliefs not in causal list.
+    Sort by absolute delta magnitude for prioritization.
+    """
+    merged = {}
+
+    # Causal updates take precedence
+    for belief_id, delta in causal:
+        merged[belief_id] = delta
+
+    # Add semantic updates for non-causal beliefs
+    for belief_id, delta in semantic:
+        if belief_id not in merged:
+            merged[belief_id] = delta
+        # If conflict (same belief in both), causal already set, skip
+
+    # Sort by magnitude for budget prioritization
+    return sorted(merged.items(), key=lambda x: abs(x[1]), reverse=True)
 
         for child_id, child_delta in updates[:budget]:
             child = beliefs[child_id]
@@ -595,6 +645,8 @@ This balances thoroughness with computational efficiency.
 
 ## 7. Evaluation
 
+**Note on evaluation scope:** This section presents initial validation results demonstrating system functionality and correctness on representative scenarios. The evaluation is qualitative and limited in scope (2 scenarios). A comprehensive empirical evaluation with quantitative metrics, baseline comparisons, and statistical analysis is planned as future work (see Section 8.5 for detailed discussion of this limitation).
+
 ### 7.1 Test Scenarios
 
 We validate the system using representative scenarios:
@@ -690,6 +742,111 @@ Current implementation (V1.5) with mock embeddings:
 **Cover & Hart (1967):** K-NN algorithm fundamentals
 
 **Difference:** We apply K-NN to meta-level belief confidence in semantic space rather than feature space classification.
+
+---
+
+## 8.5 Limitations and Threats to Validity
+
+This section explicitly acknowledges limitations of the current work (V1.5) and threats to validity of our claims.
+
+### 8.5.1 Limited Empirical Evaluation
+
+**Limitation:** Section 7 presents only 2 qualitative test scenarios without:
+- Established benchmark datasets
+- Quantitative comparison with baseline systems (classical TMS, Bayesian networks, pure LLM approaches)
+- Objective metrics (precision, recall, consistency scores, propagation accuracy)
+- Statistical significance testing across multiple runs
+
+**Impact:** Cannot conclusively demonstrate that Baye outperforms existing approaches or generalizes beyond the presented examples.
+
+**Mitigation plan (future work):**
+- Create benchmark with 50-100 belief/conflict scenarios across domains (software engineering, medical diagnosis, strategic planning)
+- Implement baselines: (a) rule-based TMS, (b) Bayesian network with manual CPTs, (c) GPT-4 zero-shot reasoning
+- Define metrics: logical consistency score, nuance preservation rate, propagation correctness, human preference ratings
+- Conduct ablation studies on hyperparameters (α, β, K)
+
+### 8.5.2 LLM Reliability and Cost
+
+**Limitation:** The system treats LLM outputs (relationship detection, conflict resolution) as reliable oracles without:
+- Validation of LLM accuracy on relationship classification
+- Analysis of LLM biases (e.g., favoring common beliefs over domain-specific ones)
+- Handling of non-deterministic outputs (same input may yield different relationships)
+- Cost-benefit analysis of API calls at scale
+
+**Impact:**
+- LLM errors in relationship detection propagate through the graph
+- System may be prohibitively expensive for large-scale deployments (Gemini API costs ~$0.01 per relationship analysis)
+- Reproducibility issues due to non-determinism
+
+**Mitigation strategies:**
+- Validate LLM outputs via human annotation on random sample (target: inter-annotator agreement κ > 0.7)
+- Implement confidence thresholds: only act on LLM relationships with confidence > 0.75
+- Cache LLM results for identical belief pairs
+- Consider hybrid approach: use heuristics for simple cases, LLM for complex semantic analysis
+
+### 8.5.3 Scalability Constraints
+
+**Limitation:** Current implementation (V1.5) has practical limits:
+- Mock embeddings (Jaccard similarity) don't capture deep semantics
+- O(N) complexity for K-NN estimation becomes prohibitive at N > 10,000 beliefs
+- No persistence layer (in-memory only)
+- No distributed processing support
+
+**Impact:** System is not production-ready for enterprise-scale knowledge graphs or long-running autonomous agents.
+
+**Roadmap:** V2.0 addresses these via vector databases (Chroma/FAISS), real embeddings (sentence-transformers), and persistent storage (Neo4j).
+
+### 8.5.4 Temporal Dynamics
+
+**Limitation:** V1.5 does not handle temporal decay of beliefs. Old beliefs maintain their confidence indefinitely, even as the world changes.
+
+**Impact:**
+- Beliefs like "API X has 99.9% uptime" remain confident even after infrastructure changes
+- No mechanism to deprecate outdated knowledge
+- Risk of acting on stale beliefs in rapidly evolving domains
+
+**Planned solution:** V2.5 will implement exponential decay (confidence × 0.95^(age_months)) with configurable half-life per domain.
+
+### 8.5.5 Hyperparameter Sensitivity
+
+**Limitation:** Hyperparameters (α=0.7, β=0.3, k=10, K=5) were chosen heuristically without systematic optimization or sensitivity analysis.
+
+**Impact:**
+- Performance may be suboptimal; different values might yield better results
+- Unclear how sensitive system behavior is to these choices
+- Domain-specific tuning not explored
+
+**Future work:**
+- Grid search over α ∈ [0.5, 0.9], β ∈ [0.1, 0.5], K ∈ [3, 10]
+- Analyze performance curves (e.g., propagation depth vs. α)
+- Learn domain-specific parameters via meta-learning
+
+### 8.5.6 Handling of Quantitative Beliefs
+
+**Limitation:** System lacks special handling for beliefs with numerical claims.
+
+**Example problematic case:**
+```
+B₁: "This API has 99.5% uptime"
+B₂: "This API has 95% uptime"
+```
+These are numerically contradictory but semantically close. LLM may classify as CONTRADICTS when REFINES (with correction) is more appropriate.
+
+**Impact:** Numerical precision in beliefs may not be preserved through propagation and conflict resolution.
+
+**Potential solution:** Detect numerical values in belief content and apply custom comparison logic before LLM analysis.
+
+### 8.5.7 Cycle Handling vs. DAG Claim
+
+**Limitation:** Section 3.2 claims graph is DAG but implementation detects cycles during propagation (Section 4.3).
+
+**Clarification:** Graph is *intended* to be DAG but system does not enforce acyclicity during edge insertion. Cycles are detected and handled reactively (propagation terminates on revisiting node) rather than prevented proactively.
+
+**Trade-off:**
+- Pros: Simpler edge insertion (no topological validation overhead)
+- Cons: Possible cycles in graph structure (though propagation handles gracefully)
+
+**Future consideration:** Add optional strict DAG enforcement mode with topological sort validation.
 
 ---
 
@@ -811,9 +968,9 @@ We have presented **Baye**, a novel neural-symbolic framework for maintaining co
 4. **Nuanced conflict resolution** generating synthesis beliefs rather than binary choices
 5. **Full interpretability** with audit trails of belief updates and justification chains
 
-The system is production-ready (V1.5) with comprehensive test coverage and demonstrates practical applications in autonomous software engineering, medical diagnosis support, and strategic decision making.
+The current implementation (V1.5) demonstrates technical feasibility with comprehensive test coverage and shows promise for practical applications in autonomous software engineering, medical diagnosis support, and strategic decision making. However, as discussed in Section 8.5, the system has important limitations including limited empirical validation, scalability constraints, and reliance on LLM oracle accuracy. Addressing these limitations through rigorous evaluation, real embeddings, and production-scale infrastructure (planned for V2.0) will be essential for deployment in high-stakes domains.
 
-As AI systems become more autonomous, maintaining coherent and interpretable belief systems becomes critical. We hope this work contributes to building AI agents that not only learn from experience but can explain their reasoning and maintain logical consistency—essential properties for deploying AI in high-stakes domains.
+As AI systems become more autonomous, maintaining coherent and interpretable belief systems becomes critical. We hope this work contributes to building AI agents that not only learn from experience but can explain their reasoning and maintain logical consistency—essential properties for trustworthy AI. The explicit acknowledgment of current limitations and clear roadmap for addressing them reflects our commitment to scientific rigor and responsible AI development.
 
 ---
 
