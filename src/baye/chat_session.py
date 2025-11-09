@@ -30,10 +30,17 @@ class Message:
     metadata: Dict = field(default_factory=dict)
 
 
+class ExtractedBelief(BaseModel):
+    """A single extracted belief"""
+    content: str = Field(..., description="The belief statement")
+    context: str = Field(default="general", description="Domain or context")
+    confidence_estimate: float = Field(default=0.5, ge=0.0, le=1.0, description="Estimated confidence")
+
+
 class BeliefExtraction(BaseModel):
     """Structured output for belief extraction from conversation"""
-    beliefs: List[Dict[str, Any]]  # Each: {content, context, confidence_estimate}
-    reasoning: str
+    beliefs: List[ExtractedBelief] = Field(default_factory=list, description="List of beliefs extracted")
+    reasoning: str = Field(..., description="Explanation of why these beliefs were extracted")
 
 
 @dataclass
@@ -190,12 +197,12 @@ Also provide reasoning explaining why you extracted these beliefs.
 
         # Process extracted beliefs
         last_created = None
-        for belief_data in extraction.beliefs:
-            # Add belief to tracker
+        for extracted_belief in extraction.beliefs:
+            # Add belief to tracker (ExtractedBelief is already validated by Pydantic)
             belief = self.tracker.add_belief(
-                content=belief_data["content"],
-                context=belief_data.get("context", "general"),
-                initial_confidence=belief_data.get("confidence_estimate"),
+                content=extracted_belief.content,
+                context=extracted_belief.context,
+                initial_confidence=extracted_belief.confidence_estimate,
                 auto_estimate=False,  # Use LLM's estimate
             )
             last_created = belief.id
@@ -327,7 +334,7 @@ Also provide reasoning explaining why you extracted these beliefs.
 
         if extraction.beliefs:
             extracted = "\n".join(
-                f"- {b['content']} (ctx: {b.get('context', 'general')}, conf≈{b.get('confidence_estimate', 0.5):.2f})"
+                f"- {b.content} (ctx: {b.context}, conf≈{b.confidence_estimate:.2f})"
                 for b in extraction.beliefs[:5]
             )
             extracted_section = (
