@@ -1,103 +1,103 @@
 # 🎉 Justification-Based Belief Tracking V1.5 - COMPLETE
 
-## ✅ Entrega Final
+## ✅ Final Delivery
 
-Implementação completa do sistema de rastreamento de crenças com **estimação automática de confiança via K-NN semântico**.
+Complete implementation of a belief tracking system with **automatic confidence estimation via semantic K-NN**.
 
 ---
 
-## 📦 Arquivos Entregues
+## 📦 Delivered Files
 
 ### Core System (V1.0)
-- `belief_types.py` (5.3KB) - Estruturas de dados fundamentais
-- `justification_graph.py` (19KB) - Motor principal do grafo
-- `propagation_strategies.py` (17KB) - Algoritmos de propagação
-- `requirements.txt` - Dependências (numpy, networkx)
+- `belief_types.py` (5.3KB) - Fundamental data structures
+- `justification_graph.py` (19KB) - Main graph engine
+- `propagation_strategies.py` (17KB) - Propagation algorithms
+- `requirements.txt` - Dependencies (numpy, networkx)
 
 ### New: Confidence Estimation (V1.5) ⭐
-- `belief_estimation.py` (13KB) - **Motor de estimação K-NN**
-- `test_estimation.py` (13KB) - Suite de testes (9/9 passing)
-- `example_estimation_integrated.py` (5.8KB) - Demonstração completa
+- `belief_estimation.py` (13KB) - **K-NN estimation engine**
+- `test_estimation.py` (13KB) - Test suite (9/9 passing)
+- `example_estimation_integrated.py` (5.8KB) - Complete demonstration
 
 ### Tests & Examples
-- `test_stripe_scenario.py` (12KB) - Teste cenário Stripe (3/5 passing)
-- `example_quick_start.py` (1.8KB) - Exemplo rápido
+- `test_stripe_scenario.py` (12KB) - Stripe scenario test (3/5 passing)
+- `example_quick_start.py` (1.8KB) - Quick example
 
 ### Documentation
-- `README.md` (11KB) - Documentação completa
-- `CHANGELOG.md` (5.8KB) - Log de mudanças V1.5
-- Este arquivo de resumo
+- `README.md` (11KB) - Complete documentation
+- `CHANGELOG.md` (5.8KB) - V1.5 changelog
+- This summary file
 
 ---
 
-## 🚀 O Que Foi Implementado (V1.5)
+## 🚀 What Was Implemented (V1.5)
 
-### Problema Resolvido: Cold-Start Confidence
+### Problem Solved: Cold-Start Confidence
 
-**Antes (V1.0):**
+**Before (V1.0):**
 ```python
-# Tinha que adivinhar a confiança
+# Had to guess confidence
 belief = graph.add_belief("APIs can timeout", confidence=0.7)  # ???
 ```
 
-**Agora (V1.5):**
+**Now (V1.5):**
 ```python
-# Confiança estimada automaticamente!
+# Confidence estimated automatically!
 belief = graph.add_belief_with_estimation(
     "APIs can timeout",
     context="infrastructure"
 )
-# Sistema analisa beliefs similares e estima: 0.68
+# System analyzes similar beliefs and estimates: 0.68
 ```
 
-### Como Funciona
+### How It Works
 
-1. **Busca Semântica**: Encontra K beliefs mais similares (Jaccard melhorado)
-2. **Média Ponderada**: `conf = Σ(sim_i × conf_i) / Σ(sim_i)`
-3. **Dampening**: Atenua similaridades extremas (>0.9)
-4. **Threshold**: Filtra noise (similaridade < 0.2)
-5. **Uncertainty**: Calcula variância para medir confiabilidade
+1. **Semantic Search**: Finds K most similar beliefs (enhanced Jaccard)
+2. **Weighted Average**: `conf = Σ(sim_i × conf_i) / Σ(sim_i)`
+3. **Dampening**: Attenuates extreme similarities (>0.9)
+4. **Threshold**: Filters noise (similarity < 0.2)
+5. **Uncertainty**: Calculates variance to measure reliability
 
-### Exemplo Real
+### Real Example
 
 ```python
-# Estado inicial
+# Initial state
 graph.add_belief("External APIs are unreliable", 0.7)
 graph.add_belief("Network calls timeout", 0.6)
 
-# Nova belief com estimação
+# New belief with estimation
 new = graph.add_belief_with_estimation(
     "APIs and services can timeout"
 )
 
-# Resultado:
-# Encontrou 2 neighbors:
+# Result:
+# Found 2 neighbors:
 #   - "External APIs..." (sim: 0.71) → conf: 0.7
 #   - "Network calls..." (sim: 0.59) → conf: 0.6
-# 
-# Estimativa: 0.68 (média ponderada)
-# Uncertainty: 0.12 (baixa - neighbors concordam)
+#
+# Estimate: 0.68 (weighted average)
+# Uncertainty: 0.12 (low - neighbors agree)
 ```
 
 ---
 
-## 📊 Validação Completa
+## 📊 Complete Validation
 
-### Testes Passing: 9/9 ✅
+### Tests Passing: 9/9 ✅
 
-| Test | Status | O Que Valida |
-|------|--------|--------------|
-| Basic K-NN | ✓ | Estimação básica funciona |
-| Low Confidence | ✓ | Herda confiança baixa de neighbors |
-| Negative Beliefs | ✓ | Propaga anti-beliefs corretamente |
-| Uncertainty | ✓ | Calcula incerteza com divergência |
-| Threshold Filtering | ✓ | Remove noise de baixa similaridade |
-| Dampening | ✓ | Atenua matches perfeitos |
-| Initializer Strategies | ✓ | Fallbacks funcionam |
-| Utility Functions | ✓ | Funções helper OK |
-| Edge Cases | ✓ | Lida com casos extremos |
+| Test | Status | What It Validates |
+|------|--------|-------------------|
+| Basic K-NN | ✓ | Basic estimation works |
+| Low Confidence | ✓ | Inherits low confidence from neighbors |
+| Negative Beliefs | ✓ | Propagates anti-beliefs correctly |
+| Uncertainty | ✓ | Calculates uncertainty with divergence |
+| Threshold Filtering | ✓ | Removes low-similarity noise |
+| Dampening | ✓ | Attenuates perfect matches |
+| Initializer Strategies | ✓ | Fallbacks work |
+| Utility Functions | ✓ | Helper functions OK |
+| Edge Cases | ✓ | Handles edge cases |
 
-### Output do Exemplo Integrado
+### Integrated Example Output
 
 ```
 Step 1: Initialize graph with foundational beliefs
@@ -133,28 +133,28 @@ Final State:
 
 ---
 
-## 🎯 Casos de Uso
+## 🎯 Use Cases
 
 ### 1. Agent Learning Loop
 
 ```python
-# Após falha em task
+# After task failure
 lesson = extract_lesson(task_failure)
 
-# Sem chute manual de confiança!
+# No manual confidence guessing!
 belief = graph.add_belief_with_estimation(
     lesson,
     context="api_calls"
 )
 
-# Propagar automaticamente
+# Propagate automatically
 graph.propagate_from(belief.id)
 ```
 
 ### 2. Bulk Initialization
 
 ```python
-# 100 beliefs de uma só vez
+# 100 beliefs at once
 statements = load_belief_corpus()
 
 ids = graph.batch_add_beliefs_with_estimation(
@@ -162,7 +162,7 @@ ids = graph.batch_add_beliefs_with_estimation(
     k=5
 )
 
-# Todas com confiança estimada automaticamente
+# All with automatically estimated confidence
 ```
 
 ### 3. Uncertainty-Aware Decisions
@@ -174,7 +174,7 @@ conf, uncertainty, _ = estimator.estimate_with_uncertainty(
 )
 
 if uncertainty > 0.7:
-    # Alta incerteza → pedir feedback humano
+    # High uncertainty → request human feedback
     conf = ask_human_feedback()
 
 belief = graph.add_belief(content, conf)
@@ -182,7 +182,7 @@ belief = graph.add_belief(content, conf)
 
 ---
 
-## 🔧 API Principal
+## 🔧 Main API
 
 ```python
 from justification_graph import JustificationGraph
@@ -195,7 +195,7 @@ estimator = SemanticEstimator(
     dampening_factor=0.9       # Attenuate extremes
 )
 
-# 1. Estimação simples
+# 1. Simple estimation
 belief = graph.add_belief_with_estimation(
     content="New belief",
     context="domain",
@@ -204,14 +204,14 @@ belief = graph.add_belief_with_estimation(
     verbose=True      # Print details
 )
 
-# 2. Com uncertainty
+# 2. With uncertainty
 conf, uncertainty, ids = estimator.estimate_with_uncertainty(
     "New belief",
     graph.beliefs.values(),
     k=5
 )
 
-# 3. Com fallback strategy
+# 3. With fallback strategy
 initializer = BeliefInitializer(estimator)
 conf, strategy = initializer.initialize_with_strategy(
     "New belief",
@@ -234,84 +234,84 @@ ids = graph.batch_add_beliefs_with_estimation([
 
 | Operation | Complexity | Notes |
 |-----------|-----------|-------|
-| Estimação (mock) | O(N) | Linear scan |
-| Estimação (embeddings reais) | O(log N) | Com vector index |
-| Batch (M beliefs) | O(M × N) | Paralelizável |
+| Estimation (mock) | O(N) | Linear scan |
+| Estimation (real embeddings) | O(log N) | With vector index |
+| Batch (M beliefs) | O(M × N) | Parallelizable |
 
-**Memory**: Stateless - não adiciona storage overhead
+**Memory**: Stateless - no storage overhead
 
 ---
 
-## 🛠️ Como Usar
+## 🛠️ How to Use
 
 ### Quick Start
 
 ```bash
-# Instalar
+# Install
 pip install -r requirements.txt
 
-# Executar exemplo rápido
+# Run quick example
 python example_quick_start.py
 
-# Executar exemplo completo de estimação
+# Run complete estimation example
 python example_estimation_integrated.py
 
-# Rodar testes
+# Run tests
 python test_estimation.py  # 9/9 passing
 python test_stripe_scenario.py  # 3/5 passing (V1.0 baseline)
 ```
 
-### Integration no Egregora
+### Integration in Egregora
 
 ```python
-# No seu agent loop
+# In your agent loop
 from justification_graph import JustificationGraph
 
 class EgregoraAgent:
     def __init__(self):
         self.beliefs = JustificationGraph()
-    
+
     async def process_conversation(self, messages):
-        # Extrair lessons
+        # Extract lessons
         lessons = await self.extract_lessons(messages)
-        
+
         for lesson in lessons:
-            # Estimação automática!
+            # Automatic estimation!
             belief = self.beliefs.add_belief_with_estimation(
                 content=lesson["text"],
                 context=lesson["category"],
                 k=5
             )
-            
-            # Propagar
+
+            # Propagate
             self.beliefs.propagate_from(belief.id)
-        
-        # Usar beliefs para guiar próximas ações
+
+        # Use beliefs to guide next actions
         return self.generate_response(self.beliefs)
 ```
 
 ---
 
-## 🚧 Limitações Atuais
+## 🚧 Current Limitations
 
-### 1. Similaridade Jaccard (Mock)
-- **Limitação**: Não captura semântica profunda
-- **Exemplo ruim**: "Validar entrada" vs "Checar input" (sinônimos, baixo overlap)
-- **Solução V2.0**: sentence-transformers embeddings
+### 1. Jaccard Similarity (Mock)
+- **Limitation**: Doesn't capture deep semantics
+- **Bad example**: "Validate input" vs "Check input" (synonyms, low overlap)
+- **Solution V2.0**: sentence-transformers embeddings
 
-### 2. Sem Auto-Discovery de Relationships
-- **Limitação**: Links são criados por heurística (threshold > 0.7)
-- **Solução V2.0**: LLM julga relacionamentos ("supports", "contradicts", etc.)
+### 2. No Auto-Discovery of Relationships
+- **Limitation**: Links created by heuristic (threshold > 0.7)
+- **Solution V2.0**: LLM judges relationships ("supports", "contradicts", etc.)
 
-### 3. Propagação Unidirecional
-- **Limitação**: supporter → dependent apenas, não o inverso
-- **Solução V2.0**: Propagação bidirecional
+### 3. Unidirectional Propagation
+- **Limitation**: supporter → dependent only, not inverse
+- **Solution V2.0**: Bidirectional propagation
 
 ---
 
 ## 🛣️ Roadmap
 
-### V1.5 ✅ (Concluído)
+### V1.5 ✅ (Complete)
 - [x] K-NN confidence estimation
 - [x] Uncertainty calculation
 - [x] Fallback strategies
@@ -319,69 +319,69 @@ class EgregoraAgent:
 - [x] Batch processing
 - [x] 9/9 tests passing
 
-### V2.0 (Próximo - 5-7 dias)
-- [ ] Sentence-transformers embeddings reais
-- [ ] LLM integration para relationship detection
-- [ ] Conflict resolution automático
-- [ ] Propagação bidirecional
-- [ ] Persistência (Neo4j + Chroma)
-- [ ] Dashboard de visualização
+### V2.0 (Next - 5-7 days)
+- [ ] Real sentence-transformers embeddings
+- [ ] LLM integration for relationship detection
+- [ ] Automatic conflict resolution
+- [ ] Bidirectional propagation
+- [ ] Persistence (Neo4j + Chroma)
+- [ ] Visualization dashboard
 
-### V2.5 (Futuro)
-- [ ] Meta-beliefs ("confio mais em security beliefs")
-- [ ] Temporal decay (beliefs antigas perdem força)
-- [ ] Active learning (pedir feedback quando incerto)
-- [ ] Aprendizado de pesos de edges
+### V2.5 (Future)
+- [ ] Meta-beliefs ("trust security beliefs more")
+- [ ] Temporal decay (old beliefs lose strength)
+- [ ] Active learning (request feedback when uncertain)
+- [ ] Edge weight learning
 
 ---
 
-## 💡 Contribuições Científicas
+## 💡 Scientific Contributions
 
-Este sistema é uma **fusão inovadora** de:
+This system is an **innovative fusion** of:
 
-| Sistema Clássico | Nossa Contribuição |
-|------------------|-------------------|
-| **TMS (Doyle, 1979)** | Substituir lógica propositional por similaridade semântica |
-| **Bayesian Networks** | Usar LLM como likelihood function não-paramétrica |
-| **K-NN Classification** | Aplicar ao espaço de meta-conhecimento (beliefs sobre beliefs) |
+| Classical System | Our Contribution |
+|------------------|------------------|
+| **TMS (Doyle, 1979)** | Replace propositional logic with semantic similarity |
+| **Bayesian Networks** | Use LLM as non-parametric likelihood function |
+| **K-NN Classification** | Apply to meta-knowledge space (beliefs about beliefs) |
 
 **Paper potential**: "Semantic Belief Initialization via K-Nearest Neighbors in Justification Graphs"
 
 ---
 
-## 📞 Suporte
+## 📞 Support
 
-**Executar testes:**
+**Run tests:**
 ```bash
-python test_estimation.py          # Testes de estimação
-python test_stripe_scenario.py     # Cenário Stripe
-python example_estimation_integrated.py  # Demo completo
+python test_estimation.py          # Estimation tests
+python test_stripe_scenario.py     # Stripe scenario
+python example_estimation_integrated.py  # Complete demo
 ```
 
 **Debug:**
-- Use `verbose=True` em `add_belief_with_estimation()`
-- Use `estimate_with_uncertainty()` para ver breakdown
-- Use `graph.explain_confidence(belief_id)` para traces
+- Use `verbose=True` in `add_belief_with_estimation()`
+- Use `estimate_with_uncertainty()` to see breakdown
+- Use `graph.explain_confidence(belief_id)` for traces
 
-**Issues conhecidas:** Nenhuma no momento
+**Known issues:** None at the moment
 
 ---
 
-## 🎊 Conclusão
+## 🎊 Conclusion
 
-Sistema V1.5 está **production-ready** com:
-- ✅ 9/9 testes passing
-- ✅ API completa e documentada
-- ✅ Exemplos funcionais
+System V1.5 is **production-ready** with:
+- ✅ 9/9 tests passing
+- ✅ Complete and documented API
+- ✅ Functional examples
 - ✅ Zero breaking changes vs V1.0
-- ✅ Performance adequada para uso em agents
+- ✅ Adequate performance for agent use
 
-**Próximo passo recomendado**: Integrar no Egregora e coletar dados reais para V2.0!
+**Recommended next step**: Integrate into Egregora and collect real data for V2.0!
 
 ---
 
-**Status**: ✅ COMPLETE  
-**Version**: 1.5  
-**Date**: 2025-11-08  
-**Tests**: 9/9 passing  
+**Status**: ✅ COMPLETE
+**Version**: 1.5
+**Date**: 2025-11-08
+**Tests**: 9/9 passing
 **Lines of Code**: ~1,800 (core) + 500 (tests) = 2,300 total

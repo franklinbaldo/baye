@@ -1,24 +1,23 @@
-# 🚀 Quickstart: Rodando Baye na sua máquina
+# 🚀 Quickstart: Running Baye on Your Machine
 
-## Pré-requisitos
+## Prerequisites
 
-- Python 3.10+ instalado
-- `uv` instalado ([instruções](https://docs.astral.sh/uv/getting-started/installation/))
-- API key do Google Gemini ([obtenha aqui](https://aistudio.google.com/app/apikey))
+- Python 3.10+ installed
+- `uv` installed ([instructions](https://docs.astral.sh/uv/getting-started/installation/))
+- Google Gemini API key ([get it here](https://aistudio.google.com/app/apikey))
 
-## Passo 1: Clone e Instale
+## Step 1: Clone and Install
 
 ```bash
-# Clone o repositório
-cd /home/frank/workspace
+# Clone the repository
 git clone https://github.com/franklinbaldo/baye.git
 cd baye
 
-# Instale dependências com uv
+# Install dependencies with uv
 uv sync
 ```
 
-**Saída esperada:**
+**Expected output:**
 ```
 Using CPython 3.13.5
 Creating virtual environment at: .venv
@@ -27,36 +26,34 @@ Installed 132 packages in 1.33s
 ✓ baye==1.5.0
 ```
 
-## Passo 2: Configure API Key
-
-Você já tem a chave em `/home/frank/workspace/.envrc`:
+## Step 2: Configure API Key
 
 ```bash
-# Opção 1: Export direto
-export GOOGLE_API_KEY="AIzaSyAa0KiCkrBLKwblc1SnNlpRf3ohQnK4uic"
+# Option 1: Direct export
+export GOOGLE_API_KEY="your-gemini-api-key"
 
-# Opção 2: Usar direnv (se já configurado)
-source /home/frank/workspace/.envrc
+# Option 2: Use direnv (if configured)
+# source .envrc
 
-# Opção 3: Criar .env no projeto
-echo 'GOOGLE_API_KEY="AIzaSyAa0KiCkrBLKwblc1SnNlpRf3ohQnK4uic"' > .env
+# Option 3: Create .env in project
+echo 'GOOGLE_API_KEY="your-key"' > .env
 ```
 
-**Verificar:**
+**Verify:**
 ```bash
 echo $GOOGLE_API_KEY
-# Deve mostrar: AIzaSyAa0KiCkrBLKwblc1SnNlpRf3ohQnK4uic
+# Should show your API key
 ```
 
-## Passo 3: Rode o Exemplo
+## Step 3: Run the Example
 
 ```bash
-# Execute o exemplo completo com LLM
-export GOOGLE_API_KEY="AIzaSyAa0KiCkrBLKwblc1SnNlpRf3ohQnK4uic"
+# Run the complete example with LLM
+export GOOGLE_API_KEY="your-key"
 uv run python examples/example_llm_integration.py
 ```
 
-**O que você vai ver:**
+**What you'll see:**
 
 ```
 🧠 Belief Tracking with PydanticAI + Gemini
@@ -135,174 +132,174 @@ Key Takeaways:
   • Context-aware analysis considers incident severity
 ```
 
-## Passo 4: Teste o Python REPL
+## Step 4: Test the Python REPL
 
 ```bash
-# Inicie o Python REPL com o ambiente
+# Start the Python REPL with the environment
 uv run python
 ```
 
 ```python
-# Importe e use
+# Import and use
 from baye import Belief, detect_relationship
 import asyncio
 
-# Crie beliefs
-b1 = Belief("APIs são confiáveis", 0.8, "infra")
-b2 = Belief("Stripe retornou erro 500", 0.9, "incident")
+# Create beliefs
+b1 = Belief("APIs are reliable", 0.8, "infra")
+b2 = Belief("Stripe returned 500 error", 0.9, "incident")
 
-# Detecte relacionamento (assíncrono)
+# Detect relationship (asynchronous)
 async def test():
     analysis = await detect_relationship(b1, b2)
-    print(f"Relação: {analysis.relationship}")
-    print(f"Confiança: {analysis.confidence}")
-    print(f"Explicação: {analysis.explanation}")
+    print(f"Relationship: {analysis.relationship}")
+    print(f"Confidence: {analysis.confidence}")
+    print(f"Explanation: {analysis.explanation}")
 
 asyncio.run(test())
 ```
 
-**Saída esperada:**
+**Expected output:**
 ```
-Relação: contradicts
-Confiança: 0.75
-Explicação: Um erro 500 do Stripe contradiz a crença de que APIs são confiáveis...
+Relationship: contradicts
+Confidence: 0.75
+Explanation: A 500 error from Stripe contradicts the belief that APIs are reliable...
 ```
 
-## Passo 5: Seu Próprio Script
+## Step 5: Your Own Script
 
-Crie `meu_teste.py`:
+Create `my_test.py`:
 
 ```python
-"""Meu primeiro teste com Baye."""
+"""My first test with Baye."""
 import asyncio
 from baye import Belief, detect_relationship, resolve_conflict
 
 async def main():
-    # Suas beliefs
+    # Your beliefs
     b1 = Belief(
-        content="Python é a melhor linguagem para ML",
+        content="Python is the best language for ML",
         confidence=0.9,
         context="programming"
     )
 
     b2 = Belief(
-        content="Julia tem melhor performance para computação científica",
+        content="Julia has better performance for scientific computing",
         confidence=0.85,
         context="programming"
     )
 
-    # Analise relacionamento
-    print("🔍 Analisando relacionamento...\n")
+    # Analyze relationship
+    print("🔍 Analyzing relationship...\n")
     analysis = await detect_relationship(b1, b2)
 
-    print(f"Relação: {analysis.relationship}")
-    print(f"Confiança: {analysis.confidence:.2f}")
-    print(f"Explicação: {analysis.explanation}\n")
+    print(f"Relationship: {analysis.relationship}")
+    print(f"Confidence: {analysis.confidence:.2f}")
+    print(f"Explanation: {analysis.explanation}\n")
 
-    # Se houver conflito, resolva
+    # If there's a conflict, resolve it
     if analysis.relationship == "contradicts":
-        print("🤝 Resolvendo conflito...\n")
+        print("🤝 Resolving conflict...\n")
         resolution = await resolve_conflict(b1, b2)
-        print(f"Resolução: {resolution.resolved_belief}")
-        print(f"Confiança: {resolution.confidence:.2f}")
+        print(f"Resolution: {resolution.resolved_belief}")
+        print(f"Confidence: {resolution.confidence:.2f}")
 
 if __name__ == "__main__":
     asyncio.run(main())
 ```
 
-**Execute:**
+**Run:**
 ```bash
-export GOOGLE_API_KEY="AIzaSyAa0KiCkrBLKwblc1SnNlpRf3ohQnK4uic"
-uv run python meu_teste.py
+export GOOGLE_API_KEY="your-key"
+uv run python my_test.py
 ```
 
 ## 🔧 Troubleshooting
 
-### Erro: "GOOGLE_API_KEY environment variable not set"
+### Error: "GOOGLE_API_KEY environment variable not set"
 
 ```bash
-# Verifique se está setada
+# Check if it's set
 echo $GOOGLE_API_KEY
 
-# Se não estiver, exporte
-export GOOGLE_API_KEY="AIzaSyAa0KiCkrBLKwblc1SnNlpRf3ohQnK4uic"
+# If not, export it
+export GOOGLE_API_KEY="your-key"
 ```
 
-### Erro: "uv: command not found"
+### Error: "uv: command not found"
 
 ```bash
-# Instale uv
+# Install uv
 curl -LsSf https://astral.sh/uv/install.sh | sh
 
-# Ou use pip
+# Or use pip
 pip install uv
 ```
 
-### Erro: "ModuleNotFoundError: No module named 'baye'"
+### Error: "ModuleNotFoundError: No module named 'baye'"
 
 ```bash
-# Certifique-se de estar no diretório correto
-cd /home/frank/workspace/baye
+# Make sure you're in the correct directory
+cd baye
 
-# Reinstale
+# Reinstall
 uv sync
 
-# Use sempre uv run
+# Always use uv run
 uv run python examples/example_llm_integration.py
 ```
 
 ### Warning: "VIRTUAL_ENV does not match"
 
-Esse warning é normal quando você tem um venv do workspace ativado. Pode ignorar ou:
+This warning is normal when you have a workspace venv activated. You can ignore it or:
 
 ```bash
-# Desative o venv do workspace
+# Deactivate workspace venv
 deactivate
 
-# Ou use o venv local do baye
+# Or use baye's local venv
 source .venv/bin/activate
 python examples/example_llm_integration.py
 ```
 
-## 📚 Próximos Passos
+## 📚 Next Steps
 
-1. **Explore os exemplos:**
+1. **Explore examples:**
    ```bash
    ls examples/
    cat examples/example_llm_integration.py
    ```
 
-2. **Leia a documentação:**
+2. **Read documentation:**
    ```bash
    cat README.md
    cat ARCHITECTURE.md
    ```
 
-3. **Rode os testes:**
+3. **Run tests:**
    ```bash
    uv run pytest tests/ -v
    ```
 
-4. **Experimente a API:**
-   - Veja `README.md` seção "API Reference"
-   - Crie suas próprias beliefs
-   - Teste detecção de relacionamentos
-   - Resolva conflitos
+4. **Try the API:**
+   - See `README.md` section "API Reference"
+   - Create your own beliefs
+   - Test relationship detection
+   - Resolve conflicts
 
-## 🎯 Casos de Uso
+## 🎯 Use Cases
 
-### 1. Sistema de Recomendação
+### 1. Recommendation System
 
 ```python
 from baye import Belief, JustificationGraph
 
 graph = JustificationGraph()
 
-# Preferências do usuário
+# User preferences
 pref1 = graph.add_belief("User likes spicy food", 0.8, "preferences")
 pref2 = graph.add_belief("User is vegetarian", 0.9, "preferences")
 
-# Sistema sugere restaurante
+# System suggests restaurant
 suggestion = graph.add_belief(
     "Recommend Thai vegetarian restaurant",
     confidence=0.85,
@@ -310,34 +307,34 @@ suggestion = graph.add_belief(
 )
 ```
 
-### 2. Agente Autônomo Aprendendo
+### 2. Autonomous Agent Learning
 
 ```python
 from baye import Belief, detect_relationship, resolve_conflict
 import asyncio
 
 async def learn_from_failure(lesson_text):
-    # Lição do erro
+    # Lesson from error
     lesson = Belief(lesson_text, confidence=0.9, context="incident")
 
-    # Beliefs existentes
+    # Existing beliefs
     existing = [
         Belief("Timeouts should be 30s", 0.7, "config"),
         Belief("APIs are reliable", 0.6, "assumptions")
     ]
 
-    # Detecta conflitos
+    # Detect conflicts
     for belief in existing:
         analysis = await detect_relationship(lesson, belief)
         if analysis.relationship == "contradicts":
-            # Resolve automaticamente
+            # Resolve automatically
             resolution = await resolve_conflict(lesson, belief)
-            print(f"Nova regra: {resolution.resolved_belief}")
+            print(f"New rule: {resolution.resolved_belief}")
 
 asyncio.run(learn_from_failure("API timeout after 10s caused failure"))
 ```
 
-### 3. Diagnóstico Médico (Exemplo Educacional)
+### 3. Medical Diagnosis (Educational Example)
 
 ```python
 symptoms = [
@@ -346,17 +343,17 @@ symptoms = [
     Belief("Patient has fatigue", 0.7, "symptoms")
 ]
 
-# Sistema infere diagnóstico baseado em beliefs
-# (simplificado para exemplo)
+# System infers diagnosis based on beliefs
+# (simplified for example)
 ```
 
-## 🆘 Precisa de Ajuda?
+## 🆘 Need Help?
 
-- **Issues GitHub**: https://github.com/franklinbaldo/baye/issues
-- **Documentação completa**: `README.md`
-- **Arquitetura**: `ARCHITECTURE.md`
-- **Código dos exemplos**: `examples/`
+- **GitHub Issues**: https://github.com/franklinbaldo/baye/issues
+- **Complete documentation**: `README.md`
+- **Architecture**: `ARCHITECTURE.md`
+- **Example code**: `examples/`
 
 ---
 
-**Dica**: Use `uv run python -i examples/example_llm_integration.py` para rodar o exemplo e cair no REPL interativo depois, onde você pode explorar os objetos criados!
+**Tip**: Use `uv run python -i examples/example_llm_integration.py` to run the example and drop into an interactive REPL afterwards, where you can explore the created objects!

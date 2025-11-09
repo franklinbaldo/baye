@@ -1,6 +1,6 @@
-# 🏗️ Arquitetura do Sistema V1.5
+# 🏗️ System Architecture V1.5
 
-## Visão Geral
+## Overview
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -17,18 +17,18 @@
 │  │           Belief Storage (Dict + NetworkX)        │          │
 │  │    {id → Belief(content, conf, supporters, ...)} │          │
 │  └──────────────────────────────────────────────────┘          │
-└───────────────────────────────┬─────────────────────────────────┘
-                                │
-                    ┌───────────┴────────────┐
-                    │                        │
-           ┌────────▼────────┐      ┌───────▼────────┐
-           │  Propagation    │      │   Estimation   │
-           │   Strategies    │      │     Engine     │
-           │ (V1.0)          │      │   (V1.5 NEW)   │
-           └────────┬────────┘      └───────┬────────┘
-                    │                       │
-    ┌───────────────┼────────────┐         │
-    │               │            │         │
+└───────────────────────────┬─────────────────────────────────────┘
+                            │
+                ┌───────────┴────────────┐
+                │                        │
+       ┌────────▼────────┐      ┌───────▼────────┐
+       │  Propagation    │      │   Estimation   │
+       │   Strategies    │      │     Engine     │
+       │ (V1.0)          │      │   (V1.5 NEW)   │
+       └────────┬────────┘      └───────┬────────┘
+                │                       │
+┌───────────────┼────────────┐         │
+│               │            │         │
 ┌───▼────┐  ┌──────▼─────┐  ┌──▼─▼────┐  │
 │ Causal │  │ Semantic   │  │ Conflict│  │
 │Propag. │  │ Propagator │  │Resolver │  │
@@ -159,17 +159,17 @@ Belief Update Event
 def calculate_dependency(child, parent):
     """
     How much does child depend on parent?
-    
+
     Returns float in [0, 1]
     """
     # Base: equal split among supporters
     base = 1.0 / len(child.supporters)
-    
+
     # Logistic saturation prevents explosion
     parent_influence = logistic(parent.conf)
-    total_influence = sum(logistic(s.conf) 
+    total_influence = sum(logistic(s.conf)
                           for s in child.supporters)
-    
+
     return base * (parent_influence / total_influence)
 
 # Logistic: 1 / (1 + e^(-k(x - mid)))
@@ -182,7 +182,7 @@ def calculate_dependency(child, parent):
 def estimate_confidence(new_content, beliefs, k=5):
     """
     Estimate confidence for new belief.
-    
+
     Returns (confidence, neighbor_ids, similarities)
     """
     # 1. Calculate similarities
@@ -193,16 +193,16 @@ def estimate_confidence(new_content, beliefs, k=5):
             sim = 0.9 + (sim - 0.9) * dampening  # Attenuate
         if sim >= threshold:
             similarities.append((b, sim))
-    
+
     # 2. Sort and take top-K
-    top_k = sorted(similarities, 
-                   key=lambda x: x[1], 
+    top_k = sorted(similarities,
+                   key=lambda x: x[1],
                    reverse=True)[:k]
-    
+
     # 3. Weighted average
     conf = sum(b.conf * sim for b, sim in top_k) / \
            sum(sim for _, sim in top_k)
-    
+
     return conf, [b.id for b, _ in top_k], [sim for _, sim in top_k]
 ```
 
@@ -214,21 +214,21 @@ def estimate_with_uncertainty(new_content, beliefs, k=5):
     Returns (confidence, uncertainty, ids)
     """
     conf, ids, sims = estimate_confidence(...)
-    
+
     # Variance in neighbor confidences
     conf_var = variance([b.conf for b in neighbors])
-    
+
     # Variance in similarities (spread)
     sim_var = variance(sims)
-    
+
     # Penalty for small sample
     sample_penalty = (k - len(ids)) / k
-    
+
     # Combined
     uncertainty = 0.5 * conf_var + \
                   0.3 * sim_var + \
                   0.2 * sample_penalty
-    
+
     return conf, min(uncertainty, 1.0), ids
 ```
 
@@ -347,6 +347,6 @@ calibration = correlation(uncertainties, errors)
 
 ---
 
-**Version**: 1.5  
-**Last Updated**: 2025-11-08  
+**Version**: 1.5
+**Last Updated**: 2025-11-08
 **Status**: Production-ready ✅
