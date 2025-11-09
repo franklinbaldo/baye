@@ -707,6 +707,64 @@ Current implementation (V1.5) with mock embeddings:
 - Add belief (estimated): O(log N) → <5ms for N=10,000
 - Semantic search: O(log N) → <10ms for N=100,000
 
+### 7.3 Missing Critical Experiments
+
+The current evaluation, while demonstrating functional correctness, lacks several experiments essential for publication in peer-reviewed venues:
+
+**1. Calibration Analysis**
+- **Question:** Does estimated uncertainty correlate with actual prediction error?
+- **Method:** Compare predicted uncertainty vs. observed error on held-out beliefs
+- **Expected plot:** Scatter plot showing positive correlation (well-calibrated system)
+- **Importance:** Validates that uncertainty estimates are trustworthy for decision-making
+
+**2. Ablation Studies**
+- **Impact of K (neighbors):** Test K ∈ {1, 3, 5, 7, 10} on estimation accuracy
+- **Impact of similarity threshold:** Vary threshold ∈ {0.1, 0.2, 0.3, 0.4, 0.5}
+- **Propagation weight ratio:** Test α:β ratios {1:0, 0.9:0.1, 0.7:0.3, 0.5:0.5, 0.3:0.7}
+- **Metric:** Mean squared error on confidence predictions
+
+**3. Baseline Comparisons**
+
+Essential to demonstrate superiority over simpler alternatives:
+- **Random assignment:** Uniform random confidence in [0, 1]
+- **Fixed default:** Always assign confidence = 0.5
+- **Global average:** Use mean confidence of all existing beliefs
+- **Context average:** Use mean confidence of beliefs in same context
+- **GPT-4 zero-shot:** Direct prompt "Rate confidence in this belief: {content}"
+
+**Expected result:** Baye's K-NN approach should outperform all baselines with statistical significance (p < 0.05).
+
+**4. Real Agent Evaluation**
+- **Task:** Deploy in actual autonomous agent (e.g., code assistant, medical diagnosis support)
+- **Metrics:**
+  - Decision quality (correctness of actions taken based on beliefs)
+  - Response time (including belief updates)
+  - Memory footprint over extended operation
+  - User satisfaction (for interactive agents)
+- **Benchmark:** Agent with belief tracking vs. without (or with rule-based tracking)
+
+**5. Scalability Analysis**
+- **Test graph sizes:** 10, 100, 1K, 10K beliefs (if feasible: 100K)
+- **Measure:**
+  - Add belief time (with estimation)
+  - Propagation time vs. depth and branching factor
+  - Memory usage vs. number of beliefs
+  - LLM API cost accumulation
+- **Identify:** Performance degradation inflection points
+
+**6. Convergence Demonstration**
+- **Setup:** Initialize graph with random confidences
+- **Procedure:** Run propagation iteratively (100+ rounds)
+- **Measure:** Change in confidences per iteration (should approach zero)
+- **Prove empirically:** System reaches stable state in O(N) or O(E) iterations
+
+**7. Consistency Analysis**
+- **Setup:** Create beliefs with known contradictions
+- **Measure:** Frequency of inconsistent states (P(A) + P(¬A) > 1.0)
+- **Compare:** System with vs. without consistency enforcement (to be implemented)
+
+**Future Work:** These experiments are planned for an extended evaluation in preparation for submission to AAAI 2026 or AAMAS 2026 (Autonomous Agents and Multiagent Systems).
+
 ---
 
 ## 8. Related Work
@@ -1044,6 +1102,94 @@ if uncertainty > 0.7:
        trust_weight=0.8
    )
    ```
+
+### 9.3 Publication Strategy and Impact Assessment
+
+**Target Venues:**
+
+**Tier 1 (Ambitious - with additional experiments):**
+- **AAAI 2026** (Association for the Advancement of Artificial Intelligence)
+  - Requirements: Strong empirical evaluation, theoretical analysis, novelty
+  - Timeline: Submission August 2025, notification October 2025
+  - Fit: Excellent for neural-symbolic integration
+
+- **IJCAI 2026** (International Joint Conference on Artificial Intelligence)
+  - Requirements: International impact, solid evaluation, clear contributions
+  - Timeline: Submission January 2026, notification April 2026
+  - Fit: Good for knowledge representation track
+
+- **NeurIPS 2026** (Neural Information Processing Systems)
+  - Requirements: Strong ML component, rigorous empirical analysis, scalability
+  - Timeline: Submission May 2026, notification September 2026
+  - Fit: Moderate (emphasize K-NN learning aspect)
+
+**Tier 2 (Realistic with current state + Section 7.3 experiments):**
+- **AAMAS 2026** (Autonomous Agents and Multiagent Systems)
+  - Requirements: Agent-focused evaluation, practical demonstrations
+  - Timeline: Submission October 2025, notification January 2026
+  - Fit: **Excellent** - directly addresses agent belief maintenance
+
+- **KR 2026** (Knowledge Representation and Reasoning)
+  - Requirements: Formal knowledge representation, reasoning mechanisms
+  - Timeline: Submission March 2026, notification May 2026
+  - Fit: Very good for TMS modernization angle
+
+- **IUI 2026** (Intelligent User Interfaces)
+  - Requirements: User-facing applications, explainability
+  - Timeline: Submission September 2025, notification December 2025
+  - Fit: Good if emphasizing interpretability for users
+
+**Journal Options (Extended Work):**
+- **JAIR** (Journal of Artificial Intelligence Research)
+  - Requirements: Comprehensive study, multiple experiments, long-form analysis
+  - Timeline: ~6 month review cycle
+  - Fit: Excellent for mature version with V2.0 implementation
+
+- **AIJ** (Artificial Intelligence Journal)
+  - Requirements: Significant contribution, theoretical depth
+  - Timeline: ~8-12 month review cycle
+  - Fit: Good for comprehensive treatment
+
+**Recommended Path:**
+1. **Short-term (2-3 months):** Complete experiments from Section 7.3
+2. **Submit to AAMAS 2026** (October 2025): Agent-focused evaluation
+3. **If accepted:** Present at conference, gather feedback
+4. **If rejected:** Address reviews, enhance with V2.0 features, submit to KR 2026
+5. **Long-term:** Extend to journal submission (JAIR) with full V2.0 evaluation
+
+**Impact Potential Assessment:**
+
+**Scientific Impact:** ⭐⭐⭐⭐ (High)
+- Novel approach to cold-start confidence problem
+- First application of K-NN to belief initialization
+- Bridges TMS and modern LLMs
+- Addresses real gap in agent architectures
+
+**Practical Impact:** ⭐⭐⭐⭐ (High)
+- Immediate applicability to autonomous agents
+- Reduces manual tuning burden
+- Enables explainable AI in high-stakes domains
+- Open-source implementation facilitates adoption
+
+**Target Beneficiaries:**
+1. **Autonomous agent developers** - Core use case
+2. **Robotics researchers** - Physical agents with belief tracking
+3. **Conversational AI** - Chatbots that learn from conversations
+4. **Medical decision support** - Diagnosis with justification chains
+5. **Educational technology** - Tutoring systems that adapt beliefs about student knowledge
+6. **Enterprise AI** - Business process automation with audit trails
+
+**Expected Citations (5-year projection):**
+- Conservative: 20-30 citations (niche application)
+- Moderate: 50-100 citations (good adoption in agent community)
+- Optimistic: 150+ citations (becomes standard approach for belief tracking)
+
+**Factors influencing adoption:**
+- Quality of empirical evaluation (Section 7.3 experiments critical)
+- Availability of real embeddings in V2.0 (addresses major limitation)
+- Documentation and examples (already strong)
+- Integration with popular agent frameworks (LangChain, AutoGPT)
+- Cost-effectiveness of LLM calls (caching, batching improvements)
 
 ---
 
