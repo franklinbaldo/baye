@@ -362,11 +362,11 @@ Also provide reasoning explaining why you extracted these beliefs.
                 neighbor = self.tracker.graph.beliefs[neighbor_id]
                 rel = await detect_relationship(belief, neighbor)
 
-                if rel.relation_type == "supports":
+                if rel.relationship == "supports":
                     self.tracker.graph.link_beliefs(
                         neighbor_id, belief.id, "supports"
                     )
-                elif rel.relation_type == "contradicts":
+                elif rel.relationship == "contradicts":
                     self.tracker.graph.link_beliefs(
                         neighbor_id, belief.id, "contradicts"
                     )
